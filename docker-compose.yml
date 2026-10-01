@@ -1,0 +1,24 @@
+services:
+  db:
+    # pgvector/pgvector, not plain postgres: the same Postgres 17 with the
+    # vector extension already compiled in. Installing it into a stock image
+    # means building a C extension, which is a worse first step than pulling
+    # an image that has it.
+    image: pgvector/pgvector:pg17
+    container_name: ocppqa-db
+    environment:
+      POSTGRES_DB: ocppqa
+      POSTGRES_USER: ocpp_owner
+      POSTGRES_PASSWORD: dev_only_not_a_secret
+    ports:
+      - "127.0.0.1:5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ocpp_owner -d ocppqa"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  pgdata:

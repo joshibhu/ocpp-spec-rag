@@ -1,0 +1,14 @@
+.env
+.venv/
+.idea/
+.DS_Store
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
+
+# THE CORPUS IS NOT COMMITTED.
+# OCPP specifications are copyright Open Charge Alliance. Redistributing them
+# would be republishing someone else's document. Supply your own copy — see
+# the README.
+docs/
