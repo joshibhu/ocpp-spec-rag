@@ -153,4 +153,158 @@ bad". **Suspect the instrument** — fourth time this sprint.
 
 ---
 
-*Days 16–21 to follow.*
+## Day 16 — Chunk on structure, not on character counts
+
+**Built:** a structure-aware chunker, idempotent re-ingestion, and a test
+harness whose labels carry their own justification.
+
+```
+Day 15   661 chunks, cut every 800 characters
+Day 16   405 chunks, cut on the document's own 231 section headings
+```
+
+**The spec told us where the boundaries are**
+
+    4.5.  Firmware Status Notification
+    6.4.  BootNotification.conf
+    7.6.  ChargePointErrorCode
+
+231 real headings. Median section 466 characters, p90 1,744, and only 10 over
+2,400 — so **most sections are already chunk-sized**. The contents page matches
+the same pattern, so it is filtered by its dot leaders.
+
+**Core concepts**
+
+- **Generic chunkers are for documents you do not understand.** If the document
+  has structure, use what it tells you. Markdown → headers. Code → functions.
+  A spec → sections.
+- **Put the heading INSIDE the chunk text, not only in metadata.** The heading
+  is the most topically dense line in the section, so including it pulls the
+  chunk's vector toward the right meaning. This turned out to matter more than
+  I expected (see below).
+- **A split section keeps its heading on every piece.** A chunk that does not
+  say what it is about embeds as if it were about nothing in particular.
+- **Section label + page = a real citation.** "§7.6, page 81" is checkable;
+  "somewhere in a 116-page PDF" is not.
+- **Idempotence belongs in the database.** A `fingerprint` column with a UNIQUE
+  index, plus `ON CONFLICT DO NOTHING`. The Python check that skips known
+  chunks is an optimisation; the index is what makes duplicates impossible.
+  Re-ingest went from 9.0s / Rs 0.16 to **0.0s / Rs 0** on an unchanged corpus.
+
+**All four Day 15 findings improved — and I predicted only two would**
+
+| Finding | Day 15 | Day 16 |
+|---|---|---|
+| mid-word chunk starts | `"otification.req…"` | starts at the heading |
+| enumeration split | started at `OtherError`, mid-list | whole, 1,316 chars, from `ConnectorLockFailure` |
+| identifier diluted | heartbeat → p.103, 0.622 | `9.1.10. HeartbeatInterval`, 0.411 |
+| answerable vs not | overlapping | *see the correction below* |
+
+The enumeration is the clean illustration: **1,316 characters.** An
+800-character window could never have held it whole, however lucky the cut.
+The document told us how big the chunk needed to be.
+
+**Where I was wrong, part 1: I called dilution a search problem**
+
+I predicted structure-aware chunking would fix findings 1 and 2 only, and that
+the heartbeat failure needed hybrid search — tomorrow's job. It fixed itself.
+
+Why: the identifier was drowned out *because it sat inside a chunk about
+something else*. Give it a section-bounded chunk with `HeartbeatInterval` as
+the heading and it is no longer buried — it is the subject.
+
+> **A sharp chunk needs less clever search.**
+
+Which weakens the case for Day 17's hybrid search. I would not have learned
+that if I had built both changes at once.
+
+**Where I was wrong, part 2: a ground-truth bug, and it flipped the result**
+
+I built a six-question test — three answerable, three not — and measured
+whether a distance cut-off could separate them. It appeared to work: a gap of
+0.15, a usable threshold around 0.48.
+
+Then Bhuwan told me what he had actually meant by "what are transactional
+events?" — not OCPP 2.0.1's `TransactionEvent` message, which I had assumed,
+but the transaction lifecycle: Start, MeterValues, Stop. Section **3.7** of
+this spec, titled "Transaction-related messages".
+
+**The question was answerable. I had filed it as unanswerable.**
+
+Moving that single label:
+
+    gap 0.15  ->  gap 0.022
+
+A cut-off at 0.48 would **refuse a question the spec can answer.**
+
+Retrieval had been right all along — §3.7 was the top hit for all three
+phrasings. I did not recognise the correct answer because I was looking for
+the wrong one.
+
+And the reason it scores 0.560 despite being correct: the question says
+"events", and OCPP 1.6 never uses that word — it says "messages".
+
+    "what are transactional events?"          0.560
+    "which messages make up a transaction?"   0.400
+    "transaction related messages"            0.413
+
+Same correct chunk, 0.16 apart. **The distance measures the phrasing at least
+as much as whether an answer exists.** That is disqualifying for a threshold.
+
+**What a ground-truth bug looks like:** nothing crashed, the code was correct,
+the numbers were correct. One label was wrong, and that was enough to produce
+a confident, wrong conclusion. It is the hardest category of bug in this work
+because there is nothing to debug.
+
+**So the harness was rebuilt**, and the format is the fix:
+
+- every label carries its justification
+- answerable cases name the section the answer should come from
+- "absent" labels are **verified** against the corpus, not remembered — which
+  immediately caught a second bad label: ISO 15118 *is* mentioned in 2 chunks,
+  so it is partially answerable and belongs in neither bucket
+- ambiguous cases go in **neither** list, with a comment saying why. Forcing
+  one into a bucket is how a test set lies to you.
+- the verdict reports a **margin**, and refuses to call 0.022 a separation
+
+**The term/concept distinction** is why this needs a domain expert: a keyword
+search can tell you `TransactionEvent` is absent. Only someone who knows OCPP
+can tell you the *concept* is covered anyway. **The labels are Bhuwan's job,
+not mine** — I have now demonstrated what happens otherwise.
+
+**Two more instrument bugs, found while fixing the first one**
+
+- my section comparison truncated `9.1.10` to `9.1`, reading a correct answer
+  as a mismatch
+- the verdict printed "SEPARATED" for a margin of 0.022, which would have
+  talked us into shipping the threshold anyway
+
+**Fifth and sixth time this sprint the measuring tool was the problem** rather
+than the system. That is no longer a coincidence; it is the dominant failure
+mode of this kind of work.
+
+**What it changes for Day 18**
+
+The refusal decision cannot be a number. The model has to read the passages
+and judge — it can see that §3.7 answers a question about "transactional
+events" even though the spec never uses the word. Distance might still serve
+as a cheap pre-filter at a generous cut-off (~0.75, to catch the genuinely
+absent), but it cannot be the decision.
+
+Third time this plan has changed, each time because of a measurement.
+
+**Run**
+
+```bash
+uv run python scripts/ingest.py --fresh       # structure-aware, ~9s, Rs 0.16
+uv run python scripts/ingest.py               # idempotent: 0 to embed
+uv run python scripts/ingest.py --naive --fresh   # Day 15's chunker, to compare
+
+uv run python scripts/check.py                # the findings, side by side
+uv run python scripts/check.py --threshold    # answerable vs not, with margins
+uv run python scripts/check.py --repl         # ask your own
+```
+
+---
+
+*Days 17–21 to follow.*

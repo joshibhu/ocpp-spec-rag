@@ -1,5 +1,7 @@
 """Storing and searching chunks."""
 
+import hashlib
+
 from typing import Any
 
 from .db import execute, executemany, query
@@ -12,6 +14,21 @@ from .embeddings import embed, embed_one
 BATCH = 100
 
 
+def fingerprint(record: dict) -> str:
+    """Stable id for a chunk: hash of what identifies it.
+
+    Includes the TEXT, so re-chunking with different settings produces
+    different fingerprints and the new chunks get embedded. Includes source
+    and section so identical boilerplate in two places stays two chunks.
+    """
+    key = f"{record['source']}|{record.get('section') or ''}|{record['text']}"
+    return hashlib.sha256(key.encode()).hexdigest()
+
+
+def existing_fingerprints() -> set[str]:
+    return {r["fingerprint"] for r in query("SELECT fingerprint FROM chunks")}
+
+
 def add(records: list[dict], progress: bool = False) -> int:
     """Store chunks. Each needs `text` and `source`; page/section optional.
 
@@ -19,6 +36,22 @@ def add(records: list[dict], progress: bool = False) -> int:
     API call per chunk is 661 round trips, and one INSERT per chunk is 661
     transactions.
     """
+    if not records:
+        return 0
+
+    # Skip what is already stored. Re-running the pipeline on unchanged
+    # documents should cost nothing — and on a large corpus, re-embedding
+    # everything to add one new document is the difference between seconds
+    # and an afternoon.
+    for r in records:
+        r["fingerprint"] = fingerprint(r)
+    known = existing_fingerprints()
+    fresh = [r for r in records if r["fingerprint"] not in known]
+
+    if progress and len(fresh) < len(records):
+        print(f"    {len(records) - len(fresh)} already stored, "
+              f"{len(fresh)} to embed", flush=True)
+    records = fresh
     if not records:
         return 0
 
@@ -31,13 +64,16 @@ def add(records: list[dict], progress: bool = False) -> int:
                 r["source"], r.get("page"), r.get("section"),
                 r["text"], len(r["text"].split()),
                 str(v),                    # pgvector accepts the list literal
+                r["fingerprint"],
             )
             for r, v in zip(batch, vectors, strict=True)
         ]
         executemany(
             """
-            INSERT INTO chunks (source, page, section, text, tokens, embedding)
-            VALUES (%s, %s, %s, %s, %s, %s)
+            INSERT INTO chunks
+                (source, page, section, text, tokens, embedding, fingerprint)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (fingerprint) DO NOTHING
             """,
             rows,
         )

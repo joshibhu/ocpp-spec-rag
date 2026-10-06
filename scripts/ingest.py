@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from ocppqa.chunking import chunk_corpus
+from ocppqa.chunking import chunk_corpus, chunk_corpus_structured
 from ocppqa.store import add, clear, count
 
 DOCS = Path("docs")
@@ -21,7 +21,11 @@ def main() -> None:
     if not DOCS.exists() or not list(DOCS.glob("*.pdf")):
         sys.exit(f"No PDFs in {DOCS}/ — see the README.")
 
-    chunks = chunk_corpus(DOCS)
+    # Structure-aware by default; --naive keeps the Day 15 baseline reachable
+    # so the two can be compared rather than one believed better.
+    naive = "--naive" in sys.argv
+    chunks = chunk_corpus(DOCS) if naive else chunk_corpus_structured(DOCS)
+    print(f"chunker: {'naive fixed-size' if naive else 'structure-aware'}")
     chars = sum(len(c.text) for c in chunks)
     tokens = chars // 4
     print(f"{len(chunks)} chunks, ~{tokens:,} tokens, "
@@ -30,7 +34,8 @@ def main() -> None:
     if "--dry" in sys.argv:
         return
 
-    clear()
+    if "--fresh" in sys.argv:
+        clear()
     started = time.time()
     add(
         [
