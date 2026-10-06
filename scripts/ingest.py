@@ -11,8 +11,8 @@ import sys
 import time
 from pathlib import Path
 
-from ocppqa.chunking import chunk_corpus, chunk_corpus_structured
-from ocppqa.store import add, clear, count
+from specrag.chunking import chunk_corpus, chunk_corpus_structured
+from specrag.store import add, clear, count
 
 DOCS = Path("docs")
 

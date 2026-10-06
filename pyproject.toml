@@ -1,7 +1,7 @@
 [project]
-name = "ocppqa"
+name = "ocpp-spec-rag"
 version = "0.1.0"
-description = "Add your description here"
+description = "Grounded question answering over the OCPP 1.6 specification"
 readme = "README.md"
 authors = [
     { name = "Bhuwan Joshi", email = "bhuwanjoshi.it@gmail.com" }
@@ -14,9 +14,13 @@ dependencies = [
     "pypdf>=6.19.0",
 ]
 
-[project.scripts]
-ocppqa = "ocppqa:main"
 
 [build-system]
 requires = ["uv_build>=0.10.7,<0.11.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+# The project is "ocpp-spec-rag" but the import is "specrag". uv_build would
+# otherwise look for src/ocpp_spec_rag/ — unlike Maven, it derives the module
+# name from the project name unless told not to.
+module-name = "specrag"

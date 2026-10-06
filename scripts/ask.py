@@ -11,7 +11,7 @@ is the point of today.
 
 import sys
 
-from ocppqa.store import count, search
+from specrag.store import count, search
 
 WIDTH = 300
 

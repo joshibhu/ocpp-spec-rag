@@ -22,8 +22,8 @@ ranking. It is a probe, not a feature. Day 17 builds the real thing.
 import re
 import sys
 
-from ocppqa.db import query
-from ocppqa.store import search
+from specrag.db import query
+from specrag.store import search
 
 STOP = {
     "what", "is", "the", "a", "an", "of", "for", "to", "in", "on", "does",

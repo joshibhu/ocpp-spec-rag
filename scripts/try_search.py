@@ -10,7 +10,7 @@ text by MEANING before pointing it at 70,000 words.
 
 import sys
 
-from ocppqa.store import add, clear, count, search
+from specrag.store import add, clear, count, search
 
 SENTENCES = [
     "The charge point sends a heartbeat every 30 seconds.",

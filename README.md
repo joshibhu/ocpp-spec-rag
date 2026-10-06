@@ -1,4 +1,4 @@
-# ocpp-answers
+# ocpp-spec-rag
 
 Ask questions about the **OCPP 1.6** specification and get the relevant
 passages back — eventually with citations, and with an honest *"that isn't in
