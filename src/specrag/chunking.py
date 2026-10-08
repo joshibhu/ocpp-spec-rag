@@ -108,9 +108,19 @@ HEADING = re.compile(r"^(\d+\.\d+(?:\.\d+)?)\.?\s+(?!\.)(.{2,70}?)\s*$", re.MULT
 # scraps.
 MIN_SECTION_CHARS = 120
 
-# Above this, a section is split. Only 10 of 231 exceed it. Each piece keeps
-# the heading, so a split section still knows what it is about.
+# Above this, a section is split. Only 10 of 231 exceed it — but section 4.9 is
+# 12,000 characters, and those 10 sections are where the damage happened.
 MAX_SECTION_CHARS = 2400
+
+# A sentence end: punctuation, then whitespace, then something that can START a
+# sentence. The lookahead is what makes this usable on a spec — without it,
+# "StatusNotification.req" and "4.9." both split, because the document is full
+# of dotted identifiers.
+SENTENCE_END = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9(•])")
+
+# Endings that look like a sentence end and are not. Without this, "e.g. insert
+# plug" becomes two sentences.
+ABBREV = re.compile(r"(?:e\.g|i\.e|etc|vs|Fig|No|no|Sec|Ch|cf|resp)\.$")
 
 
 def _page_offsets(pages: list[tuple[int, str]]) -> tuple[str, list[tuple[int, int]]]:
@@ -143,6 +153,91 @@ def _is_toc(title: str) -> bool:
     return ". . ." in title or ".." in title
 
 
+def _sentences(text: str) -> list[tuple[int, str]]:
+    """(offset, sentence) pairs.
+
+    The offset is carried because each piece of a split section has to work out
+    which PAGE it starts on. Section 4.9 spans four PDF pages; citing page 43
+    for all of it sends the reader to the wrong page.
+    """
+    starts = [0] + [m.end() for m in SENTENCE_END.finditer(text)]
+    out: list[tuple[int, str]] = []
+    for index, start in enumerate(starts):
+        end = starts[index + 1] if index + 1 < len(starts) else len(text)
+        sentence = text[start:end].strip()
+        if not sentence:
+            continue
+        if out and ABBREV.search(out[-1][1]):
+            out[-1] = (out[-1][0], out[-1][1] + " " + sentence)
+        else:
+            out.append((start, sentence))
+    return out
+
+
+def _split_long(offset: int, sentence: str, limit: int) -> list[tuple[int, str]]:
+    """One "sentence" longer than a whole chunk — in practice a TABLE, which has
+    no sentence boundaries at all.
+
+    Cut on whitespace, never inside a word. This is the floor of the design:
+    whatever else goes wrong, a chunk can no longer begin "atus change events".
+    """
+    if len(sentence) <= limit:
+        return [(offset, sentence)]
+
+    out: list[tuple[int, str]] = []
+    current: list[str] = []
+    size = 0
+    start = offset
+    cursor = offset
+    for word in sentence.split():
+        if size + len(word) + 1 > limit and current:
+            out.append((start, " ".join(current)))
+            current, size, start = [], 0, cursor
+        current.append(word)
+        size += len(word) + 1
+        cursor += len(word) + 1
+    if current:
+        out.append((start, " ".join(current)))
+    return out
+
+
+def _pack(units: list[tuple[int, str]], limit: int, overlap: int) -> list[tuple[int, str]]:
+    """Fill each piece with WHOLE sentences, up to the limit.
+
+    The overlap is now whole trailing sentences rather than the last 120
+    characters, so the repeated text reads as English instead of starting
+    mid-word.
+    """
+    pieces: list[tuple[int, str]] = []
+    current: list[tuple[int, str]] = []
+    size = 0
+
+    for unit in units:
+        if size + len(unit[1]) + 1 > limit and current:
+            pieces.append((current[0][0], " ".join(u[1] for u in current)))
+            # Carry trailing sentences into the next piece as the overlap.
+            carry: list[tuple[int, str]] = []
+            carried = 0
+            for previous in reversed(current):
+                if carried + len(previous[1]) > overlap:
+                    break
+                carry.insert(0, previous)
+                carried += len(previous[1]) + 1
+            # If the carried overlap plus the next sentence would itself
+            # overflow, drop the overlap. Otherwise the cap is a suggestion:
+            # the first version produced a 2,503-character piece against a
+            # 2,400 limit, because the carry was added after the check.
+            if carried + len(unit[1]) + 1 > limit:
+                carry, carried = [], 0
+            current, size = carry, carried
+        current.append(unit)
+        size += len(unit[1]) + 1
+
+    if current:
+        pieces.append((current[0][0], " ".join(u[1] for u in current)))
+    return pieces
+
+
 def chunk_structured(pdf: Path) -> list[Chunk]:
     """Chunk one PDF on its section headings."""
     pages = read_pages(pdf)
@@ -169,24 +264,46 @@ def chunk_structured(pdf: Path) -> list[Chunk]:
         if len(body) < MIN_SECTION_CHARS:
             continue
 
-        page = _page_at(start, offsets)
         label = f"{number}. {title}"
 
         if len(body) <= MAX_SECTION_CHARS:
-            chunks.append(Chunk(text=body, source=pdf.name, page=page, section=label))
+            chunks.append(
+                Chunk(text=body, source=pdf.name, page=_page_at(start, offsets),
+                      section=label)
+            )
             continue
 
-        # Too long: split it, but REPEAT THE HEADING on every piece. A chunk
-        # that does not say what it is about embeds as if it were about
-        # nothing in particular.
-        stride = MAX_SECTION_CHARS - OVERLAP_CHARS
-        for piece_start in range(0, len(body), stride):
-            piece = body[piece_start : piece_start + MAX_SECTION_CHARS].strip()
-            if len(piece) < MIN_SECTION_CHARS:
-                continue
-            prefixed = piece if piece_start == 0 else f"{label}\n\n{piece}"
+        # Too long: split it ON SENTENCE BOUNDARIES, repeating the heading on
+        # every piece.
+        #
+        # The previous version cut every 2,280 characters. On section 4.9 that
+        # produced one chunk starting "atus change events" and another ending
+        # "...and that do not inform the Central System of Charge" — a rule
+        # truncated mid-clause. The model, handed that fragment, tidied it into
+        # a finished sentence by dropping the word "not", inverting it. The
+        # fabrication was ours to prevent.
+        #
+        # Room is reserved for the heading prepended below, so a piece cannot
+        # exceed the limit once labelled.
+        room = MAX_SECTION_CHARS - len(label) - 2
+
+        units: list[tuple[int, str]] = []
+        for offset, sentence in _sentences(body):
+            units.extend(_split_long(offset, sentence, room))
+
+        pieces = _pack(units, room, OVERLAP_CHARS)
+        total = len(pieces)
+        for index, (offset, piece) in enumerate(pieces, start=1):
+            # Each piece gets the page it ACTUALLY starts on...
+            piece_page = _page_at(start + offset, offsets)
+            # ...and its own label, so two citations are never identical.
+            # Day 17 returned "4.9. Status Notification · p.43" twice, from
+            # different chunks, and nothing distinguished them.
+            piece_label = f"{label} ({index}/{total})"
+            prefixed = piece if index == 1 else f"{label}\n\n{piece}"
             chunks.append(
-                Chunk(text=prefixed, source=pdf.name, page=page, section=label)
+                Chunk(text=prefixed, source=pdf.name, page=piece_page,
+                      section=piece_label)
             )
 
     return chunks

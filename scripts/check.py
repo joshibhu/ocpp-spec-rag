@@ -11,58 +11,8 @@ Lower is better.
 
 import sys
 
-from specrag.store import count, search
-
-# ── the test questions, and WHY each is labelled that way ───────────────────
-#
-# This format exists because the previous one let me get a label wrong without
-# noticing. I filed "what are transactional events?" as unanswerable, assuming
-# it meant OCPP 2.0.1's TransactionEvent message. It does not — it means the
-# transaction lifecycle, which section 3.7 covers. That single wrong label
-# collapsed the measured threshold gap from 0.15 to 0.022 and flipped the
-# conclusion.
-#
-# So every entry now carries its justification, and `expect` names the section
-# the answer should come from. A label you cannot justify is a label you
-# cannot trust.
-#
-# THESE LABELS NEED A DOMAIN EXPERT. Checking whether a TERM appears is easy
-# (see the `verified` notes). Judging whether a CONCEPT is covered is not —
-# "transactional events" never appears in 1.6, yet the question is answerable.
-
-ANSWERABLE = [
-    {"q": "what is the heartbeat interval?",
-     "expect": "9.1.10",  "why": "HeartbeatInterval configuration key"},
-    {"q": "when must a charge point send StatusNotification?",
-     "expect": "4.9",     "why": "Status Notification operation"},
-    {"q": "how does RemoteStopTransaction work?",
-     "expect": "5.12",    "why": "Remote Stop Transaction operation"},
-    {"q": "what are the valid values for ChargePointErrorCode?",
-     "expect": "7.6",     "why": "the enumeration itself"},
-    {"q": "what are transactional events?",
-     "expect": "3.7",     "why": "transaction lifecycle: Start, MeterValues, Stop. "
-                                 "The WORD 'events' never appears in 1.6 — which is "
-                                 "why this scores badly despite being answerable."},
-    {"q": "what is in a MeterValues message?",
-     "expect": "6.31",    "why": "MeterValues.req field definition"},
-]
-
-# Genuinely absent. Each one VERIFIED by a keyword search over the corpus
-# returning zero chunks — not assumed from memory.
-UNANSWERABLE = [
-    {"q": "how does SetVariables work?",
-     "why": "OCPP 2.0.1 message. 1.6 uses ChangeConfiguration. "
-            "verified: 0 chunks contain 'setvariables'"},
-    {"q": "what is a BootReason?",
-     "why": "OCPP 2.0.1 field. verified: 0 chunks contain 'bootreason'"},
-]
-
-# Deliberately NOT in either list — I could not label them honestly:
-#   "how does ISO 15118 plug and charge work?"
-#       '15118' appears in 2 chunks, so 1.6 mentions it without specifying it.
-#       Partially answerable. An ambiguous case belongs in neither bucket, and
-#       pretending otherwise is how a test set lies to you.
-
+from specrag.labels import ANSWERABLE, UNANSWERABLE
+from specrag.store import index_summary, search
 
 def show(question: str, limit: int = 3) -> None:
     print(f"\nQ: {question}")
@@ -140,7 +90,7 @@ def threshold() -> None:
 
 
 def main() -> None:
-    print(f"{count()} chunks indexed.")
+    print(index_summary())
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
 
     if "--threshold" in sys.argv:

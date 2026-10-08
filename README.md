@@ -307,4 +307,259 @@ uv run python scripts/check.py --repl         # ask your own
 
 ---
 
-*Days 17–21 to follow.*
+## Day 17 — Answering, and catching the answer out
+
+**Built:** the answer step, a verifier, and an eval harness. The system stopped
+handing you passages and started making claims — which is the first day it
+could be confidently wrong.
+
+```
+answer.py     passages in, grounded answer + references out
+verify.py     checks the answer against the passages it was given
+evaluate.py   runs the labelled questions and scores four things separately
+labels.py     the answer key, in one place
+```
+
+### The design rule: the model never writes a citation
+
+It is shown passages numbered `[1]`…`[5]` with **the section and page stripped
+out**. It may only refer to them by number. The `§4.9, p.43` a reader sees is
+looked up from our own database row afterwards.
+
+> A **number** the model picks can be validated against a list we control.
+> A **string** the model writes can be validated against nothing.
+
+The worst it can do is point at the wrong passage, which is checkable. It
+cannot invent a section that does not exist.
+
+### Four failures the chunker was still causing
+
+The first answer of the day quoted, inside quotation marks:
+
+```
+"...and that do inform the Central System of Charge."
+```
+
+The spec says **do not inform**. One word deleted, a normative rule inverted,
+and the sentence reads perfectly.
+
+The cause was ours. Day 16 cut on section boundaries — but 10 sections exceed
+the 2,400-character cap, and those were still sub-split **by raw character
+count**. Section 4.9 is 12,000 characters, so it was chopped five times at
+arbitrary points, leaving one chunk ending mid-clause at `"of Charge"` and the
+next starting mid-word at `"atus change events"`.
+
+**The model did not invent from nothing. It tidied up a gap we created.**
+
+So the splitter was rewritten to cut on **sentence boundaries**: split the
+section into sentences, pack whole sentences into a chunk, and fall back to
+whitespace for tables, which have no sentence boundaries at all. Three
+measured outcomes:
+
+| | before | after |
+|---|---|---|
+| chunks starting mid-word | yes | **0** |
+| over the 2,400 cap | one at 2,503 | **0**, longest 2,398 |
+| top distance, same question | 0.276 | 0.282 — unchanged |
+
+Two citation defects went with it. Each piece now carries the page it
+**actually** starts on (§4.9 spans PDF pages 43–47; every piece used to claim
+43), and its own label — `4.9 (1/5)`, `4.9 (5/5)` — because the first answer
+returned two sources rendered **identically** and nothing distinguished them.
+
+### Then the model was handed the section backwards
+
+Retrieval returns best-match first, so `[1]` was piece 5 of 5 and `[2]` was
+piece 1 of 5. The model treats `[1]` as the most important thing it has, so it
+answered from the section's closing edge cases and never reached the rule at
+the top.
+
+Two fixes: a prompt rule to **state the general rule and how binding it is
+before any exception**, and presenting passages in **document order** rather
+than match order. Retrieval decides *what* gets in; the document decides what
+order it is *read* in.
+
+Only the first fix demonstrably worked. The reordering changed which passage
+was labelled `[1]` and the model answered from the same passage as before —
+its effect is unproven in either direction, which on a single run is all that
+can be said.
+
+### The question that keeps failing, and what it taught
+
+*"When must a charge point send StatusNotification?"*
+
+The honest answer is that **OCPP 1.6 does not require it**. §4.9 says a Charge
+Point **MAY** send one on the listed status transitions. The section's only
+`MUST` concerns the *order* messages are sent in. A CPO claiming
+non-compliance because a charger did not send a StatusNotification is, for
+1.6, usually wrong.
+
+The first answer quoted the ordering rule and never mentioned the MAY. Both
+quotes were accurate. The reader would have concluded the opposite of the
+truth.
+
+After the prompt fix it reached the right conclusion — and fabricated the
+evidence for it:
+
+```
+model:  'The Charge Point MAY send a StatusNotification.req PDU to inform
+         the Central System of a status change or an error within the
+         Charge Point'
+
+spec:   "...upon which a Charge Point MAY send a StatusNotification.req PDU
+         to the Central System."                                   (one sentence)
+        "A Charge Point sends a notification to the Central System to inform
+         the Central System about a status change or an error within the
+         Charge Point."                                      (a different one)
+```
+
+**Two real sentences merged into one that does not exist.** Right answer,
+correct page numbers, invented quote. Harder to catch than being wrong,
+because nothing about it looks wrong.
+
+### The verifier, and the eighth instrument bug
+
+`verify.py` checks what can be checked **without knowing any OCPP**:
+
+- `altered-quote` — quoted text not verbatim in a passage we sent
+- `unverified-quote` — quoted text in no passage at all
+- `fabricated-source` — cites `[9]` when it was given five passages
+- `no-source` — claims an answer, cites nothing
+- `uncited-quote` — genuine quote, but from a passage it did not cite
+
+Two things had to be fixed before it worked, both in the instrument rather
+than the system:
+
+**Curly quotes.** The spec writes `Charge Point’s` with U+2019. Compared
+against a straight apostrophe every honest quote reports as altered. This is
+the Day 3 bug exactly — a refusal measurement that scored 0/3 everywhere for
+the same reason.
+
+**The quote delimiter.** The first version matched double quotes only, on the
+reasoning that single quotes are used for field names (`'status'`) rather than
+for claims about the spec. The reasoning was right and the conclusion was
+wrong: **the model alternates delimiters run to run.** One run of the
+StatusNotification question reported three altered quotes; the next reported
+none and contained the fabrication above. The reported count was measuring
+the model's formatting mood. The 25-character minimum is what actually
+excludes field names, so it now does the job the delimiter was wrongly doing.
+
+And the report itself needed fixing before the finding was visible: the first
+version printed the first 120 characters of each string, which were identical
+— the deleted `not` sat at character 190. It now shows both strings **around
+the first point of divergence**:
+
+```
+answer:  …as offline and that do inform the Central System of Charge.…
+spec:    …as offline and that do not inform the Central System of Charge
+         Point errors…
+```
+
+### The eval, and three columns instead of a score
+
+```
+  ans    found  cited  flags
+  yes    yes    yes    unquoted-normative      what is the heartbeat interval?
+  yes    yes    yes    -                       when must a charge point send StatusNotification?
+  yes    yes    yes    unquoted-normative      how does RemoteStopTransaction work?
+  yes    yes    yes    -                       valid values for ChargePointErrorCode?
+  yes    yes    yes    -                       what are transactional events?
+  yes    NO     NO     unverified-quote        what is in a MeterValues message?
+
+  REFUSED              -                       how does SetVariables work?
+  REFUSED              -                       what is a BootReason?
+
+  answered when it should    : 6/6
+  refused when it should     : 2/2
+  expected section retrieved : 5/6
+  expected section cited     : 5/6
+```
+
+`found` and `cited` are separated because they need **opposite fixes**:
+
+```
+found NO,  cited NO   -> RETRIEVAL failed. Fix chunking or search.
+found YES, cited NO   -> the model had it and ignored it. Fix the prompt.
+cited YES, still bad  -> wrong for a reason only a domain expert can name.
+```
+
+Collapsing those into one pass/fail is how a week goes into tuning the wrong
+half of the system.
+
+**The refusal works, 2/2** — and that answers Day 16's open question. A
+distance cut-off was unusable there at a margin of 0.022. Reading the passages
+solved what a number could not.
+
+**The MeterValues failure is a clean causal chain**: §6.31 was never
+retrieved, so the passages did not contain the answer, so the model quoted
+something that is in no passage. **Retrieval misses, then the model fills the
+gap.** The same shape as the `not` deletion: a fabrication downstream of a
+retrieval or chunking defect.
+
+### The result that matters most: one run is not a measurement
+
+The same question, same index, same prompt, three runs:
+
+```
+run 1   altered-quote, unverified-quote, altered-quote
+run 2   clean under the old verifier — and a fabricated quote it could not see
+run 3   clean
+```
+
+Three different answers and three different verdicts. There is no bug here to
+fix; this is what sampling from a language model looks like. The consequence
+for Day 19 is concrete: **a golden set needs repeated runs per question**, and
+the output is a rate, not a pass. A 100-question set run once is an anecdote
+with a bigger sample size.
+
+### The honest boundary
+
+`verify.py` would have **passed** the morning's answer — the one that quoted a
+rule about message ordering in reply to a question about when to send. Every
+quote verbatim, every citation real, reader misled.
+
+> Verification catches **fabrication**. It cannot catch **a true answer to a
+> question you did not ask**.
+
+Only a labelled test set catches that, and only someone who knows OCPP can
+write those labels. A keyword search can prove `TransactionEvent` is absent
+from 1.6; only a domain expert can tell you the *concept* is covered anyway.
+This is why the answer key lives in `labels.py` under version control, headed
+for `evals/questions.yaml` on Day 19 — on Day 16 one wrong label flipped the
+entire conclusion about thresholds, and an answer key needs more review than
+the code does.
+
+### Also added
+
+A `created_at` column on `chunks`, and a header line on every script:
+
+```
+405 chunks indexed, built 2026-10-07 18:36 (17.2 hours ago)
+```
+
+`timestamptz`, not `timestamp` — a bare `timestamp` stores no offset, so it is
+a wall-clock reading with no idea which wall, and the first time the container
+runs UTC while you read IST every value is silently wrong by 5½ hours.
+
+The age is the point. Eight times in this sprint the measuring instrument was
+the bug, and every time the screen looked fine because nothing said how old
+the data was.
+
+### Run
+
+```bash
+uv run python scripts/ingest.py --fresh          # required after a chunker change:
+                                                 # every fingerprint changed, so a
+                                                 # plain ingest would give you 810 rows
+uv run python scripts/answer.py "your question"  # answer + references + verification
+uv run python scripts/answer.py -v "..."         # and the passages it was given
+uv run python scripts/evaluate.py                # score the labelled set
+uv run python scripts/evaluate.py -v             # with each answer printed
+```
+
+Content-addressed idempotence protects you from **re-running**, not from
+**changing the algorithm**.
+
+---
+
+*Days 18–21 to follow.*

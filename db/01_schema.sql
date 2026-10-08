@@ -22,7 +22,11 @@ CREATE TABLE chunks (
 
     -- 1536 = the size text-embedding-3-small produces. The column type is
     -- fixed-width, so changing embedding model means rebuilding this table.
-    embedding  vector(1536) NOT NULL
+    embedding  vector(1536) NOT NULL,
+
+    -- When this chunk was generated. timestamptz, not timestamp — see
+    -- db/03_created_at.sql for why that distinction matters.
+    created_at timestamptz NOT NULL DEFAULT now()
 );
 
 -- Without an index, finding the nearest chunk compares the question to EVERY

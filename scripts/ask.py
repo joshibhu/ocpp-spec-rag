@@ -11,7 +11,7 @@ is the point of today.
 
 import sys
 
-from specrag.store import count, search
+from specrag.store import index_summary, search
 
 WIDTH = 300
 
@@ -33,7 +33,7 @@ def main() -> None:
         limit = int(args[i + 1])
         del args[i : i + 2]
 
-    print(f"{count()} chunks indexed.")
+    print(index_summary())
 
     if args:
         show(" ".join(args), limit)

@@ -2,6 +2,8 @@
 
 import hashlib
 
+from datetime import datetime, timezone
+
 from typing import Any
 
 from .db import execute, executemany, query
@@ -102,6 +104,31 @@ def search(question: str, limit: int = 3) -> list[dict[str, Any]]:
         """,
         (vector, vector, limit),
     )
+
+
+def index_summary() -> str:
+    """One line describing the index, printed before anything trusts it.
+
+    The age is the point. Six times this sprint the measuring instrument was
+    the bug — a stale server, a stale index, a stale assumption — and in every
+    case the system looked fine because nothing on screen said how old it was.
+    """
+    row = query("SELECT count(*) AS n, max(created_at) AS built FROM chunks")[0]
+    if not row["n"]:
+        return "0 chunks indexed — run scripts/ingest.py"
+
+    built = row["built"]
+    age = datetime.now(timezone.utc) - built
+    minutes = age.total_seconds() / 60
+    if minutes < 60:
+        ago = f"{minutes:.0f} min ago"
+    elif minutes < 60 * 24:
+        ago = f"{minutes / 60:.1f} hours ago"
+    else:
+        ago = f"{minutes / 60 / 24:.1f} days ago"
+
+    local = built.astimezone()
+    return (f"{row['n']} chunks indexed, built {local:%Y-%m-%d %H:%M} ({ago})")
 
 
 def count() -> int:
