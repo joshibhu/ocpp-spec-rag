@@ -562,4 +562,234 @@ Content-addressed idempotence protects you from **re-running**, not from
 
 ---
 
-*Days 18–21 to follow.*
+## Day 18 — Hybrid search, and the measurement that said don't ship it
+
+Day 17 left exactly one retrieval failure. "What is in a MeterValues message?"
+never retrieved section 6.31 — the section *titled* MeterValues. The model was
+handed five passages that mentioned the message in passing, had nothing to copy
+from, and produced a quote-shaped sentence anyway.
+
+The textbook fix is hybrid search: run a keyword search alongside the vector
+search and combine them. This section is about building that, measuring it, and
+then **not shipping most of it.**
+
+### First, the premise deserved a challenge
+
+Vector search already matches on wording, not just meaning — the embedding of
+"MeterValues" is not unrelated to the token. So why add a second search engine
+at all?
+
+Because an embedding is a *lossy summary*. 1536 floats compress a 2,000-word
+passage into a point, and in that compression an exact identifier becomes a
+smell rather than a fact. `MeterValues`, `MeterValues.req` and
+`StatusNotification` all land near "telemetry message about a charging session."
+That is correct, and it is useless when the user typed one of them exactly.
+
+Vector search answers *what is this about*. It has no way to answer *which
+passage contains this exact token*. Those are different questions, and the
+second one is the one a spec reader asks.
+
+### Postgres already has the second engine
+
+No new infrastructure. A generated column and a GIN index:
+
+```sql
+ALTER TABLE chunks ADD COLUMN tsv tsvector GENERATED ALWAYS AS (
+  setweight(to_tsvector('english', <section, three spellings>), 'A')
+  || setweight(to_tsvector('english', <text, three spellings>), 'D')
+) STORED;
+
+CREATE INDEX chunks_tsv_idx ON chunks USING gin (tsv);
+```
+
+`GENERATED ... STORED` is Hibernate's `@Formula` except the value is actually
+written to disk and can therefore be indexed. GIN is Lucene's inverted index,
+living in the database you already run.
+
+**Three spellings**, because of the first failure below: the raw text, the text
+with `._/-` replaced by spaces, and the text with CamelCase split at the case
+boundary. So `MeterValues.req` is findable as itself, as `metervalu req`, and as
+`meter values req`.
+
+### Three keyword failures, in a row
+
+**1. The stemmer split the identifier in half.** `MeterValues` stems to
+`metervalu`; `MeterValues.req` stays one token. No shared lexeme, so the
+question and the section had nothing in common. Fixed by indexing three
+spellings.
+
+**2. `websearch_to_tsquery` ANDs the terms.** "What is in a MeterValues
+message?" became `'metervalu' & 'messag'` — and section 6.31 says *PDU*, not
+*message*. One absent word killed the whole match. Fixed by OR-ing the lexemes
+instead, via `tsvector_to_array(to_tsvector(...))` joined with `|`.
+
+**3. OR-ing returned five chunks about the word "message".** Because
+**`ts_rank` has no inverse document frequency.** This is the real surprise for
+anyone arriving from Elasticsearch: BM25 automatically discounts a term that
+appears everywhere, and Postgres simply does not. A common word counts as much
+as a rare one.
+
+So we discount it ourselves — drop any lexeme present in more than 25% of
+chunks, and weight the section title `A` against the body `D`, a 10x ratio:
+
+```python
+COMMON_LEXEME_SHARE = 0.25
+TS_WEIGHTS = "{0.1, 0.2, 0.4, 1.0}"   # {D,C,B,A}
+```
+
+A section whose *title* is your search term should win. That is the one piece of
+domain knowledge in the whole keyword path.
+
+### Combining two scores that cannot be combined
+
+```
+cosine distance   0.282    LOWER is better, bounded 0..2
+ts_rank_cd        1.600    HIGHER is better, no units, no fixed range
+```
+
+Adding them is meaningless; normalising them is guesswork, because the ranges
+move with every query. Reciprocal Rank Fusion throws both scores away and uses
+only **position**:
+
+```python
+score[id] += 1.0 / (RRF_K + rank)      # RRF_K = 60
+```
+
+At K=60 the gap between first and second place is small, so a chunk must do
+well in *both* lists to beat one that came first in only one. Agreement wins —
+which is the property worth having, since two independent methods pointing at
+the same passage is stronger evidence than either shouting alone.
+
+### Four strategies, measured
+
+`scripts/retrieval_test.py` scores each strategy against the labelled sections.
+**Retrieval makes no model call: same question, same index, same result, every
+time.** Unlike every Day 17 number, this one does not need repeating.
+
+```
+expected  question                                   vector  keyword  hybrid  ident+vec
+9.1.10    what is the heartbeat interval?                 1     MISS       2          1
+4.9       when must a CP send StatusNotification?         1        5       1          1
+5.12      how does RemoteStopTransaction work?            1        4       2          1
+7.6       valid values for ChargePointErrorCode?          1        3       1          1
+3.7       what are transactional events?                  2        2       1          2
+6.31      what is in a MeterValues message?            MISS        5       4          4
+
+hits (of 6)                                              5        5       6          6
+MRR                                                  0.750    0.247   0.708      0.792
+found at rank 1                                          4        0       3          4
+regressions vs vector                                    —        4       2          0
+```
+
+**Keyword search alone is bad** — it finds things and buries them. MRR 0.247,
+nothing at rank 1, and it damages four of the five questions vector already
+handled. On its own it is not a search engine.
+
+**Full hybrid search — the thing the plan called for — fixes the miss and
+breaks two working questions.** 6/6 hits looks like a win until you notice MRR
+*fell* from 0.750 to 0.708. It pulls errata-sheet noise into questions that
+were already answered perfectly.
+
+**The narrow version wins outright.** `identifier_aware` only reaches for
+keyword search when the question actually names something, and then searches
+*only that identifier* rather than the whole sentence — so the common words
+that poisoned the other two never enter the query. A question with no
+identifier in it ("what is the heartbeat interval?") stays pure vector search
+and keeps its rank 1.
+
+```python
+IDENTIFIER = re.compile(r"\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+(?:\.[a-z]+)?\b")
+```
+
+Better on every number, zero regressions, and perhaps fifteen lines against
+hybrid's full fusion. **Six questions is too few for 0.792 vs 0.750 to be
+significant, and I am not claiming it is.** What makes it decisive is zero
+regressions and less machinery. Full RRF-over-everything was built, measured,
+and discarded.
+
+The second time in three days that the sophisticated fix lost: Day 16 predicted
+hybrid search was needed and the chunker fixed it; Day 18 built hybrid search
+and the measurement said ship the small version.
+
+### Wiring it in, and making the eval honest
+
+The strategy is injected rather than hard-wired, so it can be swapped without
+touching the prompt:
+
+```python
+def answer(question, limit=RETRIEVE, retrieve: Retriever = identifier_aware) -> Result:
+```
+
+And the eval gained `--runs`, for the reason Day 17 ended on: the same question
+asked three times produced three different verdicts. **Retrieval is
+deterministic; generation is not.** A single run cannot distinguish "fixed"
+from "absent this time."
+
+```python
+def tally(hit, runs, bad, good="yes"):
+    if hit == runs: return good      # all runs agreed
+    if hit == 0:    return bad
+    return f"{hit}/{runs}"           # the number that matters most
+```
+
+A question counts as passing only if it passed *every* run. One good run out of
+three is a lucky sample, not a working system.
+
+### Before and after, three runs each
+
+| | vector | ident+vec |
+|---|---|---|
+| answered when it should | 6/6 | 6/6 |
+| expected section retrieved | **5/6** | **6/6** |
+| expected section cited | **5/6** | **6/6** |
+| refused when it should | 2/2 | 2/2 |
+| misquotes (over 24 answers) | 2 | 3 |
+
+**The retrieval result is real.** 5/6 to 6/6, with MeterValues retrieved and
+cited in all three runs, and retrieval is deterministic — that is a fact, not a
+sample.
+
+**The misquote count going 2 to 3 is noise, and saying so is the point.** The
+flags shuffled between rows: heartbeat gained one, RemoteStopTransaction traded
+two warnings for one misquote, transactional events lost one. Over 24 answers,
+2 versus 3 is a coin landing differently. The footer of the eval script says 8
+questions is a smoke test — and that cuts both ways. It cannot vindicate the
+change and it cannot convict it.
+
+**A prediction I got wrong, kept here deliberately.** I predicted the invented
+MeterValues quote would disappear once section 6.31 reached the model. Running
+the baseline three times showed `unquoted-normative x3` and no fabrication at
+all — **the thing I promised to measure was already invisible at this sample
+size before anything changed.** The Day 17 fabrication came from a single run.
+One run is an anecdote in both directions.
+
+### What is still unexplained
+
+`unquoted-normative` fires on MeterValues three times out of three, with the
+right section absent *and* present. Stable behaviour, unaffected by retrieval —
+the one signal in here that is not noise.
+
+It may well be our instrument again. The check triggers on
+`\b(shall|must|may|should)\b` in an answer containing no quotes, and "what is
+in a MeterValues message?" invites a field list, where *"the request may
+include a transactionId"* uses **"may" as ordinary English, not as OCPP's
+normative MAY.** Distinguishing the two needs more than a word match. Carried
+into Day 19.
+
+### Deliberately not fixed
+
+Errata-sheet sections dominate keyword results, because their titles are long
+and titles are weighted `A`. Visible in the keyword column above. Left alone
+until the 60-question set can say whether it costs anything.
+
+### Run
+
+```bash
+uv run python scripts/retrieval_test.py                      # compare strategies
+uv run python scripts/evaluate.py --strategy vector --runs 3 # the old behaviour
+uv run python scripts/evaluate.py --runs 3                   # the new default
+```
+
+---
+
+*Days 19–21 to follow.*

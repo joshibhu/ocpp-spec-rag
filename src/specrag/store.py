@@ -106,6 +106,109 @@ def search(question: str, limit: int = 3) -> list[dict[str, Any]]:
     )
 
 
+# A query word appearing in more than this share of chunks is useless for
+# finding anything. "message" is in most of the corpus; "MeterValues" is in
+# six chunks. Postgres ranks them equally, so the common ones are dropped
+# before they can drown out the rare ones.
+#
+# This is inverse document frequency in its crudest usable form: not a weight,
+# just a cutoff. The proper version is BM25, which is what Elasticsearch
+# ranks with and one real reason people run a search engine next to their
+# database.
+COMMON_LEXEME_SHARE = 0.25
+
+# {D, C, B, A} — the order Postgres expects. The section title is indexed as
+# A, the body as D, so a title match counts ten times a body match.
+TS_WEIGHTS = "{0.1, 0.2, 0.4, 1.0}"
+
+
+def _useful_lexemes(question: str) -> list[str]:
+    """The question's words, stemmed, with the over-common ones removed.
+
+    Going through to_tsvector rather than splitting the string means the
+    question gets the same stemming and stop-word removal the documents got —
+    "sending" and "sent" both become "send" on both sides, or neither matches.
+    """
+    rows = query(
+        "SELECT unnest(tsvector_to_array(to_tsvector('english', %s))) AS lex",
+        (question,),
+    )
+    lexemes = [r["lex"] for r in rows]
+    if not lexemes:
+        return []
+
+    total = count()
+    # One index lookup per word. quote_literal makes each lexeme a literal
+    # tsquery term, so a lexeme containing a dot ("metervalues.req") is not
+    # re-parsed into something else.
+    rows = query(
+        """
+        SELECT l.lex,
+               (SELECT count(*) FROM chunks c
+                 WHERE c.tsv @@ quote_literal(l.lex)::tsquery) AS ndoc
+        FROM unnest(%s::text[]) AS l(lex)
+        """,
+        (lexemes,),
+    )
+    keep = [r["lex"] for r in rows if r["ndoc"] <= total * COMMON_LEXEME_SHARE]
+
+    # If every word is common, searching for nothing finds nothing — fall back
+    # to all of them and let the ranking do what it can.
+    return keep or lexemes
+
+
+def keyword_search(question: str, limit: int = 5) -> list[dict[str, Any]]:
+    """Find chunks containing the question's WORDS, not its meaning.
+
+    Why this exists, when vector search already works: on Day 17 "what is in a
+    MeterValues message?" never retrieved section 6.31, which is titled
+    MeterValues. Meaning-search can miss a word printed in the text.
+
+    THREE ATTEMPTS FAILED BEFORE THIS ONE. Each failure is the lesson.
+
+    (1) `to_tsvector('english', text)` cannot find identifiers.
+
+            MeterValues      ->  'metervalu'         (stemmed)
+            MeterValues.req  ->  'metervalues.req'   (ONE token — the dot)
+
+        No shared lexeme, so one never finds the other. The PARSER causes
+        this, not the stemmer. Fixed by indexing three spellings of every
+        chunk — see db/04_fulltext.sql.
+
+    (2) `websearch_to_tsquery` ANDs the words. The question above parses to
+        'metervalu' & 'messag', and section 6.31 never says "message" — it
+        says PDU. One word the document happens not to use and the match is
+        gone. So the words are OR'd instead.
+
+    (3) OR'ing made it worse: the top five became chunks about messages in
+        general, because ts_rank has no inverse document frequency and
+        "message" is everywhere. Fixed two ways — over-common words are
+        dropped before the query is built, and the section title is weighted
+        ten times the body.
+
+    The score is returned as `rank`, where HIGHER is better, deliberately not
+    as `distance`, where lower is better. Two numbers pointing opposite ways
+    under one name is a bug waiting to happen.
+    """
+    lexemes = _useful_lexemes(question)
+    if not lexemes:
+        return []
+
+    tsquery = " | ".join("'" + lex.replace("'", "''") + "'" for lex in lexemes)
+
+    return query(
+        """
+        SELECT id, source, page, section, text,
+               ts_rank_cd(%s::float4[], tsv, %s::tsquery) AS rank
+        FROM chunks
+        WHERE tsv @@ %s::tsquery
+        ORDER BY rank DESC
+        LIMIT %s
+        """,
+        (TS_WEIGHTS, tsquery, tsquery, limit),
+    )
+
+
 def index_summary() -> str:
     """One line describing the index, printed before anything trusts it.
 

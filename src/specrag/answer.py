@@ -18,13 +18,13 @@ A string the model writes cannot be validated against anything.
 """
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 
 from openai import OpenAI
 from pydantic import BaseModel, Field
 
+from .retrieval import identifier_aware
 from .settings import settings
-from .store import search
 
 client = OpenAI(api_key=settings.openai_api_key)
 
@@ -118,6 +118,12 @@ def _render(rows: list[dict[str, Any]]) -> str:
     return "\n\n".join(blocks)
 
 
+# A retrieval strategy: question and limit in, ranked rows out. Every function
+# in retrieval.STRATEGIES satisfies it. (Python's structural equivalent of
+# declaring the parameter as a Java functional interface.)
+Retriever = Callable[..., list[dict[str, Any]]]
+
+
 @dataclass
 class Result:
     """The answer, plus everything needed to check it."""
@@ -140,12 +146,23 @@ class Result:
         ]
 
 
-def answer(question: str, limit: int = RETRIEVE) -> Result:
-    """Retrieve, then answer from what was retrieved."""
+def answer(
+    question: str,
+    limit: int = RETRIEVE,
+    retrieve: Retriever = identifier_aware,
+) -> Result:
+    """Retrieve, then answer from what was retrieved.
+
+    `retrieve` is injected so the retrieval strategy can be swapped without
+    touching the prompt, and so scripts/evaluate.py can measure the answer
+    quality of each one. The default is identifier_aware because it is the
+    only strategy that beat plain vector search on the Day 18 retrieval test
+    with no question getting worse. See retrieval.py for the numbers.
+    """
     # Retrieve by relevance, then PRESENT in document order. The two are
-    # different jobs: distance decides what gets in, the document decides what
-    # order it is read in.
-    rows = _in_document_order(search(question, limit=limit))
+    # different jobs: the strategy decides what gets in, the document decides
+    # what order it is read in.
+    rows = _in_document_order(retrieve(question, limit=limit))
 
     completion = client.chat.completions.parse(
         model=settings.chat_model,
