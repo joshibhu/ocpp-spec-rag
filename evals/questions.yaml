@@ -102,6 +102,115 @@ questions:
       answer that quotes the ordering MUST is accurate and still leaves the
       reader believing the opposite of the truth.
 
+  # Four shapes of false premise, two questions each. Every one was verified
+  # against the corpus before being labelled — the refuting sentence is quoted
+  # in the `why`, because a premise I only BELIEVE is wrong is exactly what
+  # this eval exists to test. The author of the key must not also be its
+  # examiner.
+
+  # shape: a MUST that is really a MAY
+  - id: meter-values-timing-must
+    q: when must a charge point send a MeterValues message during a transaction?
+    kind: false-premise
+    expect: ["4.7", "9.1.19"]
+    why: >
+      4.7 settles it in one sentence: "It is up to the Charge Point to decide
+      when it will send meter values." There is no obligation to contradict —
+      9.1.19 MeterValueSampleInterval is a configuration key, and a value of 0
+      means no sampled data is sent at all. A correct answer says the timing is
+      configured, not mandated. The dangerous answer quotes the SHALL in 4.7
+      ("SHALL send a MeterValues.req PDU for offloading meter values"), which
+      is about the message FORMAT once you send one, not about when.
+
+  # shape: a MUST that is really a MAY
+  - id: connector-unlock-must
+    q: when must a charge point unlock the connector after the cable is unplugged at the EV?
+    kind: false-premise
+    expect: ["4.10", "9.1.33", "9.1.23"]
+    why: >
+      Unlocking is governed by two configuration keys, not by a rule: 9.1.33
+      UnlockConnectorOnEVSideDisconnect and 9.1.23
+      StopTransactionOnEVSideDisconnect. 4.10 states the precedence — when
+      StopTransactionOnEVSideDisconnect is false "cables always remain
+      locked". So the honest answer is "it depends on two keys", and it must
+      name both, because answering with only one of them is how a field
+      engineer ends up debugging a cable that will not release.
+
+  # shape: a field assumed required that is optional
+  - id: status-notification-timestamp-required
+    q: why is the timestamp field required in a StatusNotification.req?
+    kind: false-premise
+    expect: ["6.47"]
+    why: >
+      6.47 lists timestamp as 0..1 Optional, with "If absent time of receipt
+      of the message will be assumed." Only connectorId, errorCode and status
+      are 1..1 Required. The question invents a requirement. This one is
+      deliberately close to a real lookup — the correct section IS retrieved,
+      and the whole test is whether the model reads the cardinality column
+      instead of agreeing with the question.
+
+  # shape: a field assumed required that is optional
+  - id: stop-transaction-meter-data-required
+    q: why must a StopTransaction.req carry the meter values collected during the transaction?
+    kind: false-premise
+    expect: ["6.49", "4.10"]
+    why: >
+      transactionData is 0..* Optional in 6.49, and 4.10 calls it "an optional
+      TransactionData element". meterStop IS required, which is the trap: the
+      passage contains a required meter field and an optional meter-value
+      list, so an inattentive answer can confirm the premise using the wrong
+      row of the same table.
+
+  # shape: a default the specification never states
+  - id: default-heartbeat-interval
+    q: what is the default heartbeat interval in OCPP 1.6?
+    kind: false-premise
+    expect: ["9.1.10", "4.6"]
+    why: >
+      9.1.10 HeartbeatInterval defines the key — required, RW, integer,
+      seconds — and states no value. 4.6 says only "after a configurable time
+      interval". The premise assumes the specification picked a number. That
+      it did not is a deliberate choice, not an omission: 9.1.17
+      MeterValuesSampledData DOES carry an explicit Default, which proves the
+      document states a default when it intends one.
+
+  # shape: a default the specification never states
+  - id: default-connection-timeout
+    q: what is the default connection timeout value in OCPP 1.6?
+    kind: false-premise
+    expect: ["9.1.6"]
+    why: >
+      9.1.6 ConnectionTimeOut defines the interval from status 'Preparing'
+      until an incipient transaction is cancelled, and gives no value. Also a
+      word-sense test: "connection timeout" sounds like a network setting, so
+      a wrong answer may reach for WebSocket ping timing in the JSON transport
+      spec, which is a different document and a different concept.
+
+  # shape: a capability assumed on the wrong side of the protocol
+  - id: csms-start-charging-without-transaction
+    q: how does the Central System make a charge point deliver energy without starting a transaction?
+    kind: false-premise
+    expect: ["5.11", "6.33"]
+    why: >
+      There is no such operation. 5.11 Remote Start Transaction is the closest
+      thing and it starts a TRANSACTION — and even then its effect depends on
+      9.1.3 AuthorizeRemoteTxRequests, so the charge point may still authorize
+      first. Energy delivery outside a transaction is not something OCPP 1.6
+      exposes. Asked because CPO roadmaps request it regularly.
+
+  # shape: a capability assumed on the wrong side of the protocol
+  - id: csms-read-meter-on-demand
+    q: how does the Central System read a charge point's current meter reading directly?
+    kind: false-premise
+    expect: ["5.17", "6.51", "7.32"]
+    why: >
+      It cannot read anything. OCPP 1.6 has no request/response that returns a
+      meter value; the charge point reports. The nearest mechanism is 5.17
+      Trigger Message — 6.51 TriggerMessage.req with requestedMessage set to
+      MeterValues from the 7.32 MessageTrigger enumeration — which ASKS the
+      charge point to send a MeterValues.req, and 7.44 TriggerMessageStatus
+      allows it to be rejected. The premise treats the charger as a REST API.
+
   # ── unanswerable: a refusal is the correct answer ─────────────────────────
 
   - id: set-variables
@@ -216,3 +325,620 @@ questions:
       I achieve this outcome" rather than "what does this section say" — and
       the answer requires knowing that availability is the mechanism, which
       the question never names.
+
+  # ── title-derived lookups ─────────────────────────────────────────────────
+  #
+  # Generated by scripts/propose_questions.py from the specification's table
+  # of contents, then reviewed by hand. 50 drafted, 43 kept. Seven were
+  # deleted for one reason: their answer is contained in the subject they
+  # name. "What does SendLocalListMaxLength control?" is answerable by
+  # splitting the identifier, with no retrieval at all — it would pass even
+  # if the index were empty, so it measures nothing while still adding a
+  # point to the score. A question that cannot fail is not a test.
+  #
+  # What this group IS good for: it is large, mechanical and unbiased by what
+  # I know about the system. What it is NOT good for: it is almost entirely
+  # the easy shape, and its phrasing is copied off the answer sheet. Read the
+  # per-kind numbers, never the single headline average — 43 easy questions
+  # will drown the 6 hard ones that actually found the failure modes.
+
+  - id: feature-profiles
+    q: what does OCPP 1.6 say about Feature Profiles?
+    kind: lookup
+    expect: ["3.3"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: authorization-cache
+    q: what does OCPP 1.6 say about Authorization Cache?
+    kind: lookup
+    expect: ["3.5.1"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: local-authorization-list
+    q: what does OCPP 1.6 say about Local Authorization List?
+    kind: lookup
+    expect: ["3.5.2"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: parent-idtag
+    q: what does OCPP 1.6 say about Parent idTag?
+    kind: lookup
+    expect: ["3.10"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: vendor-specific-data-transfer
+    q: what does OCPP 1.6 say about Vendor-specific data transfer?
+    kind: lookup
+    expect: ["3.12"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: smart-charging-use-cases
+    q: what does OCPP 1.6 say about Smart Charging Use Cases?
+    kind: lookup
+    expect: ["3.13.4"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: offline-behavior-of-smart-charging
+    q: what does OCPP 1.6 say about Offline behavior of smart charging?
+    kind: lookup
+    expect: ["3.13.6"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: time-notations
+    q: what does OCPP 1.6 say about Time notations?
+    kind: lookup
+    expect: ["3.15"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: boot-notification
+    q: how does Boot Notification work in OCPP 1.6?
+    kind: lookup
+    expect: ["4.2"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: transactions-before-being-accepted-by-a
+    q: what does OCPP 1.6 say about Transactions before being accepted by a Central System?
+    kind: lookup
+    expect: ["4.2.1"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: data-transfer
+    q: how does Data Transfer work in OCPP 1.6?
+    kind: cross-section
+    expect: ["4.3", "5.6"]
+    why: >
+      Data Transfer appears TWICE, in opposite directions: 4.3 is
+      Charge Point initiated, 5.6 is Central System initiated. The
+      generator produced one id for both and its duplicate check
+      caught the collision. Not a slug bug — a fact about the
+      protocol. A real answer covers both directions, so a reply
+      naming only one is half an answer, which is precisely what
+      coverage exists to catch.
+
+  - id: diagnostics-status-notification
+    q: how does Diagnostics Status Notification work in OCPP 1.6?
+    kind: lookup
+    expect: ["4.4"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: firmware-status-notification
+    q: how does Firmware Status Notification work in OCPP 1.6?
+    kind: lookup
+    expect: ["4.5"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: heartbeat
+    q: how does Heartbeat work in OCPP 1.6?
+    kind: lookup
+    expect: ["4.6"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: change-availability
+    q: how does Change Availability work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.2"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: get-composite-schedule
+    q: how does Get Composite Schedule work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.7"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: get-diagnostics
+    q: how does Get Diagnostics work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.9"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: remote-start-transaction
+    q: how does Remote Start Transaction work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.11"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: reserve-now
+    q: how does Reserve Now work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.13"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: reset
+    q: how does Reset work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.14"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: setting-a-charging-profile-during-a-tran
+    q: what does OCPP 1.6 say about Setting a charging profile during a transaction?
+    kind: lookup
+    expect: ["5.16.3"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: trigger-message
+    q: how does Trigger Message work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.17"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: update-firmware
+    q: how does Update Firmware work in OCPP 1.6?
+    kind: lookup
+    expect: ["5.19"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: bootnotification-req
+    q: what fields are in a BootNotification.req?
+    kind: lookup
+    expect: ["6.3"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: cancelreservation-req
+    q: what fields are in a CancelReservation.req?
+    kind: lookup
+    expect: ["6.5"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: changeavailability-req
+    q: what fields are in a ChangeAvailability.req?
+    kind: lookup
+    expect: ["6.7"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: changeavailability-conf
+    q: what does a ChangeAvailability.conf contain?
+    kind: lookup
+    expect: ["6.8"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: changeconfiguration-req
+    q: what fields are in a ChangeConfiguration.req?
+    kind: lookup
+    expect: ["6.9"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: getcompositeschedule-req
+    q: what fields are in a GetCompositeSchedule.req?
+    kind: lookup
+    expect: ["6.21"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: remotestarttransaction-req
+    q: what fields are in a RemoteStartTransaction.req?
+    kind: lookup
+    expect: ["6.33"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: reservenow-req
+    q: what fields are in a ReserveNow.req?
+    kind: lookup
+    expect: ["6.37"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: starttransaction-req
+    q: what fields are in a StartTransaction.req?
+    kind: lookup
+    expect: ["6.45"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: chargingscheduleperiod
+    q: what fields does ChargingSchedulePeriod contain?
+    kind: lookup
+    expect: ["7.14"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: clearcachestatus
+    q: what are the valid values for ClearCacheStatus?
+    kind: lookup
+    expect: ["7.20"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: firmwarestatus
+    q: what are the valid values for FirmwareStatus?
+    kind: lookup
+    expect: ["7.25"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: messagetrigger
+    q: what are the valid values for MessageTrigger?
+    kind: lookup
+    expect: ["7.32"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: phase
+    q: what are the valid values for Phase?
+    kind: lookup
+    expect: ["7.34"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: resettype
+    q: what are the valid values for ResetType?
+    kind: lookup
+    expect: ["7.42"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: triggermessagestatus
+    q: what are the valid values for TriggerMessageStatus?
+    kind: lookup
+    expect: ["7.44"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: unitofmeasure
+    q: what are the valid values for UnitOfMeasure?
+    kind: lookup
+    expect: ["7.45"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: unlockstatus
+    q: what are the valid values for UnlockStatus?
+    kind: lookup
+    expect: ["7.46"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: stoptransactiononevsidedisconnect
+    q: what does the StopTransactionOnEVSideDisconnect configuration key control?
+    kind: lookup
+    expect: ["9.1.23"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.
+
+  - id: reserveconnectorzerosupported
+    q: what does the ReserveConnectorZeroSupported configuration key control?
+    kind: lookup
+    expect: ["9.3.1"]
+    why: >
+      Title-derived. The expected section is the one whose heading
+      produced this question, so the mapping is correct by
+      construction, not by judgement. Reviewed only for whether it is
+      a question a person would ask. The WORDING comes from the
+      specification's own table of contents, which is this whole
+      group's weakness: it uses the document's vocabulary, not an
+      operator's, and so cannot surface the vocabulary gap that the
+      hand-written questions found.

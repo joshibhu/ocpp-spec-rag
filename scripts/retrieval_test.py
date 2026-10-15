@@ -108,6 +108,24 @@ def main() -> None:
           + " ".join(f"{sum(g for g, _ in covered[n])}/"
                      f"{sum(w for _, w in covered[n]):<7}" for n in names))
 
+    # PER KIND, because the single average above is now misleading. 46 of the
+    # 64 questions are title-derived lookups: easy, and phrased in the
+    # document's own words. They outvote the 16 hand-written ones 3 to 1, so a
+    # strategy could get worse at every hard question and the headline number
+    # would barely move. An average over unlike things hides the thing you
+    # most need to see.
+    print()
+    print(f"  {'by kind':<56} " + " ".join(f"{n:>9}" for n in names))
+    for kind in sorted({c.kind for c in questions}, key=lambda k: k.value):
+        rows_of_kind = [i for i, c in enumerate(questions) if c.kind is kind]
+        cells = []
+        for name in names:
+            got = sum(covered[name][i][0] for i in rows_of_kind)
+            want = sum(covered[name][i][1] for i in rows_of_kind)
+            cells.append(f"{got}/{want}".rjust(9))
+        label = f"{kind.value} ({len(rows_of_kind)} q)"
+        print(f"  {label:<56} " + " ".join(cells))
+
     print()
     baseline = positions["vector"]
     for name in names:
