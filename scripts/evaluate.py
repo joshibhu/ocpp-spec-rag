@@ -12,13 +12,17 @@ knowing the number.
 THE POINT OF SEPARATING THE COLUMNS: an answer can fail in two unrelated
 places, and the fix is different for each.
 
-    found  = the expected section was among the retrieved passages
-    cited  = the model actually used it
+    cover  how many of the expected sections were retrieved
+    cited  how many of them the model actually used
 
-    found NO,  cited NO   -> RETRIEVAL failed. Fix chunking or search.
-    found YES, cited NO   -> the model had it and ignored it. Fix the prompt.
-    cited YES, still bad  -> the answer is wrong for a reason only a domain
-                             expert can name.
+    cover 0/1, cited 0/1  -> RETRIEVAL failed. Fix chunking or search.
+    cover 1/1, cited 0/1  -> the model had it and ignored it. Fix the prompt.
+    cover 1/1, cited 1/1  -> if it is still wrong, the reason is one only a
+                             domain expert can name.
+    cover 3/5             -> partially answered, which a pass/fail column
+                             cannot express. "What are transactional events?"
+                             needs five sections; three of them is an answer
+                             missing Start Transaction and Meter Values.
 
 Collapsing those into one "pass/fail" is how you end up tuning the wrong half
 of the system for a week.
@@ -33,7 +37,7 @@ from one run is an anecdote.
 import sys
 
 from specrag.answer import answer
-from specrag.labels import ANSWERABLE, UNANSWERABLE
+from specrag.questions import Question, load
 from specrag.retrieval import STRATEGIES
 from specrag.store import index_summary
 from specrag.verify import verify
@@ -52,31 +56,37 @@ def section_prefix(section: str | None) -> str:
 
 def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> None:
     retrieve = STRATEGIES[strategy]
+    questions = load()
 
     print(index_summary())
+    print(f"  {questions.summary()}")
     print(f"  strategy: {strategy}   runs per question: {runs}")
     print()
-    print("  ans = answered (did not refuse)   found = expected section retrieved")
-    print("  cited = model used it             flags = verifier findings")
+    print("  ans = answered (did not refuse)   cover = expected sections retrieved")
+    print("  cited = of those, model used      flags = verifier findings")
+    print("  ~ = reported but not scored (ambiguous)")
     print()
 
-    answered_right = found_right = cited_right = 0
+    answered_right = covered_right = cited_right = refusals_right = 0
+    sections_got = sections_want = 0
     errors = warnings = 0
+    scored_answerable = scored_refusals = 0
 
-    for case in ANSWERABLE:
-        expected = case["expect"]
-        hits = {"ans": 0, "found": 0, "cited": 0}
+    for case in questions.questions:
+        answered = 0
+        cover_got, want = 0, 0          # retrieval is deterministic: one value
+        cited_gots: list[int] = []      # generation is not: one per run
         flags: list[str] = []
 
         for _ in range(runs):
-            result = answer(case["q"], retrieve=retrieve)
+            result = answer(case.q, retrieve=retrieve)
             report = verify(result)
 
-            hits["ans"] += result.reply.answerable
-            hits["found"] += any(section_prefix(r["section"]).startswith(expected)
-                                 for r in result.passages)
-            hits["cited"] += any(section_prefix(r["section"]).startswith(expected)
-                                 for r in result.cited())
+            answered += result.reply.answerable
+            cover_got, want = case.coverage(result.passages)
+            cited_gots.append(case.coverage(result.cited())[0])
+            sections_got += cover_got
+            sections_want += want
             errors += sum(f.level == "error" for f in report.findings)
             warnings += sum(f.level == "warning" for f in report.findings)
             flags.extend(f.code for f in report.findings)
@@ -84,48 +94,64 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
             if verbose:
                 print(f"           {' '.join(result.reply.answer.split())[:220]}")
 
-        # A question only counts as passing if it passed EVERY run. One good
-        # run out of three is not a working system, it is a lucky sample.
-        answered_right += hits["ans"] == runs
-        found_right += hits["found"] == runs
-        cited_right += hits["cited"] == runs
+        # A question passes only if it passed EVERY run. One good run out of
+        # three is a lucky sample, not a working system.
+        if case.scored:
+            if case.answerable:
+                scored_answerable += 1
+                answered_right += answered == runs
+                covered_right += want > 0 and cover_got == want
+                cited_right += want > 0 and all(c == want for c in cited_gots)
+            else:
+                scored_refusals += 1
+                refusals_right += answered == 0
 
-        print(f"  {tally(hits['ans'], runs, 'REFUSED'):>8}"
-              f"  {tally(hits['found'], runs, 'NO'):>7}"
-              f"  {tally(hits['cited'], runs, 'NO'):>7}"
-              f"  {summarise(flags):<30} {case['q']}")
-        if verbose:
-            print(f"           expected {expected} · {case['why'][:90]}")
+        print(f"  {'~' if not case.scored else ' '}"
+              f" {verdict(case, answered, runs):>8}"
+              f"  {span([cover_got], want):>7}"
+              f"  {span(cited_gots, want):>7}"
+              f"  {summarise(flags):<30} {case.q}")
+        if verbose and case.expect:
+            print(f"           expect {case.expect} · {case.why.strip()[:90]}")
 
     print()
-    refusals_right = 0
-    for case in UNANSWERABLE:
-        refused_count = 0
-        flags = []
-        for _ in range(runs):
-            result = answer(case["q"], retrieve=retrieve)
-            report = verify(result)
-            refused_count += not result.reply.answerable
-            errors += sum(f.level == "error" for f in report.findings)
-            flags.extend(f.code for f in report.findings)
-            if verbose:
-                print(f"           {' '.join(result.reply.answer.split())[:220]}")
-        refusals_right += refused_count == runs
-        print(f"  {tally(refused_count, runs, 'ANSWERED', 'REFUSED'):>8}"
-              f"  {'':>7}  {'':>7}  {summarise(flags):<30} {case['q']}")
-
-    total = len(ANSWERABLE)
-    print()
-    print(f"  answered when it should      : {answered_right}/{total}")
-    print(f"  expected section retrieved   : {found_right}/{total}")
-    print(f"  expected section cited       : {cited_right}/{total}")
-    print(f"  refused when it should       : {refusals_right}/{len(UNANSWERABLE)}")
+    print(f"  answered when it should      : {answered_right}/{scored_answerable}")
+    print(f"  all expected sections found  : {covered_right}/{scored_answerable}")
+    print(f"  all expected sections cited  : {cited_right}/{scored_answerable}")
+    print(f"  sections retrieved overall   : {sections_got}/{sections_want}")
+    print(f"  refused when it should       : {refusals_right}/{scored_refusals}")
     print(f"  verifier: {errors} fabrications, {warnings} warnings"
-          f"  (over {runs * (total + len(UNANSWERABLE))} answers)")
+          f"  (over {runs * len(questions.questions)} answers)")
     print()
-    print("  8 questions is not a measurement — it is a smoke test. Day 19")
-    print("  turns this into 60-100 labelled questions, which is where a")
-    print("  percentage starts meaning something.")
+    print(f"  {len(questions.questions)} questions is not a measurement — it is a smoke")
+    print("  test. 60-100 labelled questions is where a percentage starts")
+    print("  meaning something.")
+
+
+def verdict(case: Question, answered: int, runs: int) -> str:
+    """The answered/refused cell, read from the question's point of view.
+
+    For an answerable question the good outcome is "it answered". For an
+    unanswerable one the good outcome is "it refused" — so the count is
+    inverted rather than the column being relabelled.
+    """
+    if case.answerable:
+        return tally(answered, runs, "REFUSED")
+    return tally(runs - answered, runs, "ANSWERED", "REFUSED")
+
+
+def span(got: list[int], want: int) -> str:
+    """Sections found over sections wanted, across runs.
+
+    Retrieval is deterministic, so the cover column always has one value and
+    prints "3/5". Citation is not: the model may use four of five sections in
+    one run and two in the next, and that prints "2-4/5". A single number
+    there would hide the variance, which is the one thing Day 17 taught.
+    """
+    if not want:
+        return ""
+    low, high = min(got), max(got)
+    return f"{low}/{want}" if low == high else f"{low}-{high}/{want}"
 
 
 def tally(hit: int, runs: int, bad: str, good: str = "yes") -> str:

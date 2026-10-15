@@ -1,0 +1,133 @@
+# The answer key for the OCPP 1.6 RAG system.
+#
+# WHAT IS STORED HERE AND WHAT IS NOT
+#
+# Only QUESTIONS and the SECTION NUMBERS an answer should come from. Never the
+# specification's answer text. The OCPP specifications are copyright Open
+# Charge Alliance; this repository is public, and the PDFs are gitignored. A
+# section number is a pointer, not a reproduction.
+#
+# WHY A FILE AND NOT A DATABASE TABLE
+#
+# On Day 16 a single wrong label flipped the entire conclusion about distance
+# thresholds. An answer key needs more review than the code it tests, so it
+# lives in a diff where a changed label is visible, with its justification
+# beside it.
+#
+# EVERY ENTRY CARRIES ITS REASON
+#
+# `why` is not documentation. It is the thing that caught the Day 16 bug: a
+# label you cannot justify in one sentence is a label you cannot trust.
+
+version: 1
+
+# WHY THE DOCUMENT NAME IS PART OF THE ANSWER KEY
+#
+# Section numbers are NOT unique across the corpus. "3.7" exists in four of
+# the five PDFs: it is "Transaction-related messages" in the core spec, "From"
+# (an XML header field) in the SOAP spec, and a typo correction in each errata
+# sheet. Scoring on the section number alone would count a hit on the wrong
+# document — and it would push the score UP, so it would read as an
+# improvement. Every question therefore names the document it is about.
+default_source: ocpp-1.6-edition-2.pdf
+
+# ── kinds, and why the distinction is not cosmetic ──────────────────────────
+#
+#   lookup         one section answers it. The easy case.
+#   cross-section  the answer needs two or more sections together.
+#   false-premise  the question assumes a rule the spec does not impose. A
+#                  correct answer contradicts the question.
+#   unanswerable   not in this document. A correct answer refuses.
+#   ambiguous      the corpus mentions it without specifying it. RUN and
+#                  REPORTED, but excluded from the headline score, because
+#                  grading it honestly is not possible. Pretending otherwise
+#                  is how a test set starts lying to you.
+
+questions:
+
+  # ── lookup ────────────────────────────────────────────────────────────────
+
+  - id: heartbeat-interval
+    q: what is the heartbeat interval?
+    kind: lookup
+    expect: ["9.1.10"]
+    why: HeartbeatInterval is a configuration key; 9.1.10 defines it.
+
+  - id: remote-stop-transaction
+    q: how does RemoteStopTransaction work?
+    kind: lookup
+    expect: ["5.12"]
+    why: 5.12 is the Remote Stop Transaction operation.
+
+  - id: chargepoint-errorcode-values
+    q: what are the valid values for ChargePointErrorCode?
+    kind: lookup
+    expect: ["7.6"]
+    why: 7.6 is the ChargePointErrorCode enumeration itself.
+
+  - id: metervalues-contents
+    q: what is in a MeterValues message?
+    kind: lookup
+    expect: ["6.31"]
+    why: 6.31 is the MeterValues.req field definition.
+
+  # ── cross-section ─────────────────────────────────────────────────────────
+
+  - id: transactional-events
+    q: what are transactional events?
+    kind: cross-section
+    expect: ["3.7", "4.1", "4.8", "4.7", "4.10"]
+    why: >
+      A complete answer has to walk the whole charging session, not just the
+      overview: 3.7 Transaction-related messages, then 4.1 Authorize, 4.8
+      Start Transaction, 4.7 Meter Values, 4.10 Stop Transaction. Originally
+      labelled with 3.7 alone, which made a partial answer look complete.
+      The word "events" never appears in OCPP 1.6, which is why this scores
+      badly on keyword search while being perfectly answerable. Before that it
+      was mislabelled unanswerable, assuming 2.0.1's TransactionEvent message;
+      that one wrong label collapsed the measured threshold gap from 0.15 to
+      0.022 and flipped the day's conclusion. Two wrong labels on one
+      question, both caught by having to justify it in writing.
+
+  # ── false premise ─────────────────────────────────────────────────────────
+
+  - id: status-notification-must
+    q: when must a charge point send StatusNotification?
+    kind: false-premise
+    expect: ["4.9"]
+    why: >
+      The premise is wrong. OCPP 1.6 says a Charge Point MAY send a
+      StatusNotification on a status transition; the only MUST in 4.9 concerns
+      message ORDERING. A correct answer says there is no such obligation. An
+      answer that quotes the ordering MUST is accurate and still leaves the
+      reader believing the opposite of the truth.
+
+  # ── unanswerable: a refusal is the correct answer ─────────────────────────
+
+  - id: set-variables
+    q: how does SetVariables work?
+    kind: unanswerable
+    expect: []
+    why: >
+      SetVariables is an OCPP 2.0.1 message; 1.6 uses ChangeConfiguration.
+      verified: 0 chunks in the corpus contain "setvariables".
+
+  - id: boot-reason
+    q: what is a BootReason?
+    kind: unanswerable
+    expect: []
+    why: >
+      BootReason is an OCPP 2.0.1 field.
+      verified: 0 chunks in the corpus contain "bootreason".
+
+  # ── ambiguous: reported, not scored ───────────────────────────────────────
+
+  - id: iso15118-plug-and-charge
+    q: how does ISO 15118 plug and charge work?
+    kind: ambiguous
+    expect: []
+    why: >
+      "15118" appears in 2 chunks, so OCPP 1.6 mentions the standard without
+      specifying it. Partially answerable. Previously excluded from the set
+      entirely because it fitted neither bucket — which lost the information.
+      Kept here, run, reported, and left out of the score.

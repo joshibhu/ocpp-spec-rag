@@ -11,7 +11,7 @@ Lower is better.
 
 import sys
 
-from specrag.labels import ANSWERABLE, UNANSWERABLE
+from specrag.questions import load
 from specrag.store import index_summary, search
 
 def show(question: str, limit: int = 3) -> None:
@@ -50,23 +50,23 @@ def threshold() -> None:
     print("  answerable question scores BETTER than the best unanswerable one.\n")
 
     best_answerable, best_unanswerable = [], []
+    questions = load()
 
-    for case in ANSWERABLE:
-        top = search(case["q"], 1)[0]
+    for case in (q for q in questions.scored if q.expect):
+        top = search(case.q, 1)[0]
         best_answerable.append(top["distance"])
-        # Compare as a PREFIX, not by truncating to two parts: the earlier
-        # version read a correct "9.1.10" as a mismatch against "9.1.10"
-        # because it chopped it to "9.1". My comparison was the bug, not the
-        # retrieval — fifth time this sprint the instrument was wrong.
-        section = (top["section"] or "")
-        got = section.split()[0].rstrip(".") if section else "-"
-        mark = "ok " if got.startswith(case["expect"]) else f"!! got {got}"
-        print(f"  {top['distance']:.3f}  answerable  {mark:14} {case['q']}")
+        # Coverage of the top ONE passage, which is all a threshold ever sees.
+        # Compared as a prefix, never truncated: the earlier version read a
+        # correct "9.1.10" as a mismatch by chopping it to "9.1" — fifth time
+        # this sprint the instrument was the bug.
+        got, want = case.coverage([top])
+        mark = "ok " if got else f"!! got {top['section'] or '-'}"[:14]
+        print(f"  {top['distance']:.3f}  answerable  {mark:14} {case.q}")
     print()
-    for case in UNANSWERABLE:
-        d = search(case["q"], 1)[0]["distance"]
+    for case in (q for q in questions.scored if not q.answerable):
+        d = search(case.q, 1)[0]["distance"]
         best_unanswerable.append(d)
-        print(f"  {d:.3f}  ABSENT      {'':14} {case['q']}")
+        print(f"  {d:.3f}  ABSENT      {'':14} {case.q}")
 
     worst_ok = max(best_answerable)
     best_bad = min(best_unanswerable)
