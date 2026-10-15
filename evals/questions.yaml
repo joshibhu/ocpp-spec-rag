@@ -942,3 +942,119 @@ questions:
       group's weakness: it uses the document's vocabulary, not an
       operator's, and so cannot surface the vocabulary gap that the
       hand-written questions found.
+
+  # ── operational questions ─────────────────────────────────────────────────
+  #
+  # Phrased the way a CPO, a commissioning engineer or a support ticket would
+  # phrase them: an OUTCOME is asked for, and the protocol mechanism that
+  # delivers it is never named. This is the group the title-derived lookups
+  # structurally cannot contain, because those take their words from the
+  # document's own table of contents.
+  #
+  # Every expected section was read before being listed. The grouping is
+  # domain judgement, so each `why` says what the sections contribute; a
+  # label whose reasoning is not written down is a label nobody can audit.
+
+  - id: rfid-works-one-charger-not-another
+    q: a driver's RFID card works at one charger but is rejected at another. what should I check?
+    kind: cross-section
+    expect: ["4.1", "3.5.1", "3.5.2", "9.1.13", "9.2.1"]
+    why: >
+      Not one OCPP term appears in the question, yet the answer is spread
+      over five places: 4.1 Authorize is the online path, 3.5.1 the
+      Authorization Cache and 3.5.2 the Local Authorization List are the two
+      local stores that can disagree between two chargers, 9.1.13
+      LocalPreAuthorize decides whether the charger asks the Central System
+      at all, and 9.2.1 LocalAuthListEnabled can be off on one unit and on
+      in the other. Answering with only 4.1 is confidently useless — it
+      explains the case that is working.
+
+  - id: reboot-during-session
+    q: a charger rebooted in the middle of a session. what happens to that transaction?
+    kind: cross-section
+    expect: ["4.2", "4.2.1", "3.7", "9.1.31", "9.1.32"]
+    why: >
+      4.2.1 is the section this question exists for: after a restart the
+      Charge Point MUST contact the Central System again and send a
+      BootNotification, and it warns outright that it is "uncertain if those
+      transactions can ever be delivered". 4.2 is the boot handshake, 3.7
+      defines which messages are transaction-related and therefore queued,
+      and 9.1.31 TransactionMessageAttempts with 9.1.32
+      TransactionMessageRetryInterval govern the retrying. The honest answer
+      is that the outcome is configured, not guaranteed.
+
+  - id: charger-stuck-faulted
+    q: a charger is stuck showing Faulted in my dashboard. how do I get it back to Available?
+    kind: cross-section
+    expect: ["4.9", "7.7", "7.6", "5.14", "7.42"]
+    why: >
+      Two unrelated halves of the document have to meet: the state model
+      (4.9 Status Notification, 7.7 ChargePointStatus for Faulted and
+      Available, 7.6 ChargePointErrorCode for the cause) and an operation
+      that acts on it (5.14 Reset, 7.42 ResetType for Soft versus Hard).
+      Nothing in either half announces that it is the answer to "how do I
+      clear a fault", which is the retrieval problem in one line.
+
+  - id: discover-smart-charging-support
+    q: how do I find out whether a charger supports smart charging before I send it a charging profile?
+    kind: cross-section
+    expect: ["3.13.5", "9.1.29", "5.8", "3.3"]
+    why: >
+      3.13.5 Discovery of Charge Point Capabilities is normative and answers
+      it directly — a Smart Charging enabled Charge Point SHALL support
+      reporting the relevant keys through GetConfiguration, which is 5.8.
+      9.1.29 SupportedFeatureProfiles is the key that names the profiles and
+      3.3 Feature Profiles explains what a profile is. A real commissioning
+      step, and the question never says "configuration key".
+
+  - id: reservation-driver-no-show
+    q: a driver reserved a connector and never turned up. what happens to the reservation?
+    kind: cross-section
+    expect: ["3.11", "5.13", "5.1", "7.40"]
+    why: >
+      3.11 Reservations carries the expiry rule and how a reservation is
+      released, 5.13 Reserve Now creates it, 5.1 Cancel Reservation removes
+      it early and 7.40 ReservationStatus is what the charger replies. The
+      question asks about the NON-event — nobody arrived — and the spec
+      describes it under expiry, a word the question does not use.
+
+  - id: offline-session-billing-data
+    q: the charger was offline for most of a session. do I still get the meter data for billing?
+    kind: cross-section
+    expect: ["3.5", "3.16.5", "4.10", "9.1.27"]
+    why: >
+      The interesting part is that being offline is the wrong suspect.
+      3.16.5 states it plainly: when StopTxnAlignedData and StopTxnSampledData
+      are set to an empty string the Charge Point SHALL NOT put meter values
+      in StopTransaction.req — so the data can be missing on a perfectly
+      healthy connection. 3.5 covers the offline behaviour the question
+      assumes is to blame, 4.10 holds the optional transactionData element
+      and 9.1.27 is the key that decides. A good answer corrects the premise
+      while still answering the question.
+
+  - id: fleet-firmware-update-confirmation
+    q: I need to push a firmware update to a fleet of chargers. how do I know it actually worked on each one?
+    kind: cross-section
+    expect: ["5.19", "4.5", "7.25", "5.17"]
+    why: >
+      5.19 Update Firmware sends it, 4.5 Firmware Status Notification is how
+      the charger reports back, 7.25 FirmwareStatus holds the values that
+      distinguish Installed from DownloadFailed, and 5.17 Trigger Message is
+      the recovery path when a charger goes quiet mid-update — which 5.17
+      names as its own motivating example. Four sections, and the question
+      asks about confirmation, a word none of them use.
+
+  - id: site-wide-current-limit
+    q: how do I set a 60 A limit shared across all the chargers at one site?
+    kind: false-premise
+    expect: ["3.13.1", "3.13.4", "5.16"]
+    why: >
+      OCPP 1.6 has no site-level concept. 3.13.1 is exact about the scope of
+      the strongest profile available: ChargePointMaxProfile limits "the
+      power or current to be shared by all connectors of the Charge Point",
+      and may only be set at ConnectorId 0 — one charge point, not one site.
+      Sharing a limit across several chargers is the Central System's job,
+      sending a separate profile to each. 3.13.4 Smart Charging Use Cases and
+      5.16 Set Charging Profile are the mechanism a correct answer redirects
+      to. Included because the premise sells easily: answered wrongly, it
+      becomes a product commitment the protocol cannot keep.
