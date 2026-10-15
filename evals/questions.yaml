@@ -131,3 +131,88 @@ questions:
       specifying it. Partially answerable. Previously excluded from the set
       entirely because it fitted neither bucket — which lost the information.
       Kept here, run, reported, and left out of the score.
+
+  # ── from the domain expert, not from the table of contents ────────────────
+  #
+  # These six came from someone who has worked on charge points for fifteen
+  # years, and not one of them could have been generated from section titles.
+  # They ask about sequence, failure, and operational intent — none of which
+  # a heading announces.
+
+  - id: charging-session-event-sequence
+    q: what is the sequence of OCPP events during a charging session?
+    kind: cross-section
+    expect: ["3.7", "4.1", "4.8", "4.7", "4.10", "4.9"]
+    why: >
+      Needs the whole session: 4.1 Authorize, 4.8 Start Transaction, 4.7
+      Meter Values, 4.10 Stop Transaction, 4.9 Status Notification, plus the
+      3.7 overview. Harder than `transactional-events` because it asks for
+      the ORDER, and no single passage states the order — it has to be
+      assembled from six sections. Closely related to that question, so the
+      two will tend to pass or fail together; kept because "what are they"
+      and "in what order" are different failures.
+
+  - id: offline-before-session-start
+    q: what happens if the server connection is broken before a session starts?
+    kind: cross-section
+    expect: ["3.5", "3.5.4", "4.2.1", "9.1.12", "9.1.1"]
+    why: >
+      Offline authorisation behaviour: 3.5 Local Authorization & Offline
+      Behavior, 3.5.4 Unknown Offline Authorization, 4.2.1 Transactions
+      before being accepted by a Central System, and the two configuration
+      keys that govern it, 9.1.12 LocalAuthorizeOffline and 9.1.1
+      AllowOfflineTxForUnknownId. A question about a FAILURE MODE, which no
+      section heading advertises.
+
+  - id: set-charging-profile-snake-case
+    q: how does set_charging_profile event work?
+    kind: cross-section
+    expect: ["5.16", "6.43"]
+    why: >
+      5.16 Set Charging Profile is the operation, 6.43 SetChargingProfile.req
+      the message. The SPELLING IS KEPT AS ASKED — snake_case, and "event"
+      rather than "operation". OCPP writes SetChargingProfile, and our
+      identifier-aware retrieval only fires on CamelCase, so this tests
+      whether a wrongly-spelled identifier still reaches the right section.
+      Real users type it this way; normalising the question would remove the
+      test.
+
+  - id: messages-carrying-timestamp
+    q: which OCPP messages carry a timestamp?
+    kind: cross-section
+    expect: ["3.15", "6.45", "6.47", "6.49", "7.33", "6.30"]
+    why: >
+      Verified by searching the corpus for a dateTime field: StartTransaction.req,
+      StatusNotification.req, StopTransaction.req, MeterValue, Heartbeat.conf,
+      and 3.15 Time notations for the format. JUDGEMENT CALL, PLEASE CHECK:
+      GetDiagnostics.req, UpdateFirmware.req, ReserveNow.req and IdTagInfo
+      also carry dateTime fields, but those are scheduling dates and expiry
+      dates rather than event timestamps, so they are excluded. If the
+      intended reading was "every dateTime field", add them.
+
+  - id: csms-initiated-operations
+    q: which CSMS-initiated operations does a charge point acknowledge and respond to?
+    kind: ambiguous
+    expect: []
+    why: >
+      A human answers this from the table of contents: chapter 5 is titled
+      "Operations Initiated by Central System" and its subsections are the
+      list. But NO PASSAGE CONTAINS THAT LIST. 3.3 Feature Profiles groups
+      messages by profile, not by direction, and chapter 5 has no preamble
+      enumerating its operations. So the answer lives in the document's
+      STRUCTURE, which a chunk-based retriever cannot see — it only ever
+      holds pieces of text. Kept as a documented structural limit of RAG:
+      reported, not scored. A table-of-contents index would fix it, which is
+      a design note for later.
+
+  - id: suspend-and-re-enable-charger
+    q: how can a charger be suspended so it allows no further sessions, and how is it enabled again?
+    kind: cross-section
+    expect: ["5.2", "6.7", "7.4", "7.3"]
+    why: >
+      5.2 Change Availability is the operation, 6.7 ChangeAvailability.req
+      the message, 7.4 AvailabilityType the Inoperative/Operative values and
+      7.3 AvailabilityStatus the response. An OPERATIONAL question — "how do
+      I achieve this outcome" rather than "what does this section say" — and
+      the answer requires knowing that availability is the mechanism, which
+      the question never names.
