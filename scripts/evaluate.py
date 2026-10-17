@@ -36,7 +36,9 @@ from one run is an anecdote.
 
 import sys
 
-from specrag.answer import answer
+from openai import APIError
+
+from specrag.answer import Result, Retriever, answer
 from specrag.questions import Question, load
 from specrag.retrieval import STRATEGIES
 from specrag.store import index_summary
@@ -54,6 +56,28 @@ def section_prefix(section: str | None) -> str:
     return section.split()[0].rstrip(".")
 
 
+def attempt(question: str, retrieve: Retriever) -> Result | None:
+    """One answer, or None if the API would not produce one.
+
+    The SDK already retries transient failures four times; this catches what
+    survives that. Returning None instead of raising is the whole point, and
+    it is arithmetic rather than caution: a three-run pass over 74 questions
+    is 222 calls, so even a 1% per-call failure rate fails the run about nine
+    times in ten. A harness that dies on any single failure is a harness that
+    never finishes — and it takes the twenty minutes of completed work with
+    it, which is exactly how this script lost a full run.
+
+    APIError is the base of the SDK's timeout, connection and status errors,
+    so this catches the transport and the service while still letting a
+    genuine bug in our own code crash loudly.
+    """
+    try:
+        return answer(question, retrieve=retrieve)
+    except APIError as exc:
+        print(f"      LOST  {type(exc).__name__}: {exc}"[:110], flush=True)
+        return None
+
+
 def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> None:
     retrieve = STRATEGIES[strategy]
     questions = load()
@@ -67,10 +91,17 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
     print("  ~ = reported but not scored (ambiguous)")
     print()
 
+    # Per kind as well as overall, for the reason retrieval_test.py already
+    # reports it: 46 of the 72 scored questions are title-derived lookups and
+    # they outvote everything else 3 to 1. The single headline figure moves
+    # with the easy group and stays still while the hard group fails.
+    per_kind: dict[str, list[int]] = {}
+
     answered_right = covered_right = cited_right = refusals_right = 0
     sections_got = sections_want = 0
     errors = warnings = 0
     scored_answerable = scored_refusals = 0
+    lost_calls = incomplete = 0
 
     for case in questions.questions:
         answered = 0
@@ -78,8 +109,14 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
         cited_gots: list[int] = []      # generation is not: one per run
         flags: list[str] = []
 
+        lost_runs = 0
+
         for _ in range(runs):
-            result = answer(case.q, retrieve=retrieve)
+            result = attempt(case.q, retrieve)
+            if result is None:
+                lost_runs += 1
+                lost_calls += 1
+                continue
             report = verify(result)
 
             answered += result.reply.answerable
@@ -97,20 +134,32 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
         # A question passes only if it passed EVERY run. One good run out of
         # three is a lucky sample, not a working system.
         if case.scored:
-            if case.answerable:
+            # A question with a lost run is reported as incomplete, not
+            # failed. Scoring it on the runs that did return would quietly
+            # change the sample size per question, and a 2-run question
+            # sitting in a 3-run column is a number nobody can reproduce.
+            if lost_runs:
+                incomplete += 1
+            elif case.answerable:
                 scored_answerable += 1
                 answered_right += answered == runs
                 covered_right += want > 0 and cover_got == want
                 cited_right += want > 0 and all(c == want for c in cited_gots)
+                tallies = per_kind.setdefault(case.kind.value, [0, 0, 0, 0, 0])
+                tallies[0] += 1
+                tallies[1] += answered == runs
+                tallies[2] += want > 0 and cover_got == want
+                tallies[3] += cover_got
+                tallies[4] += want
             else:
                 scored_refusals += 1
                 refusals_right += answered == 0
 
         print(f"  {'~' if not case.scored else ' '}"
-              f" {verdict(case, answered, runs):>8}"
+              f" {f'LOST {lost_runs}/{runs}' if lost_runs else verdict(case, answered, runs):>8}"
               f"  {span([cover_got], want):>7}"
               f"  {span(cited_gots, want):>7}"
-              f"  {summarise(flags):<30} {case.q}")
+              f"  {summarise(flags):<30} {case.q}", flush=True)
         if verbose and case.expect:
             print(f"           expect {case.expect} · {case.why.strip()[:90]}")
 
@@ -120,6 +169,15 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
     print(f"  all expected sections cited  : {cited_right}/{scored_answerable}")
     print(f"  sections retrieved overall   : {sections_got}/{sections_want}")
     print(f"  refused when it should       : {refusals_right}/{scored_refusals}")
+    if lost_calls:
+        print(f"  calls lost to API errors     : {lost_calls}"
+              f"  ({incomplete} questions unscored)")
+    print()
+    print(f"  {'by kind':<16} {'n':>3} {'answered':>9} {'full cover':>11} {'sections':>10}")
+    for kind, (n, ans, full, got, want) in sorted(per_kind.items()):
+        print(f"  {kind:<16} {n:>3} {ans:>9} {full:>11} {f'{got}/{want}':>10}")
+
+    print()
     print(f"  verifier: {errors} fabrications, {warnings} warnings"
           f"  (over {runs * len(questions.questions)} answers)")
     print()

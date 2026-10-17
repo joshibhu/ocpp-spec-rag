@@ -26,7 +26,17 @@ from pydantic import BaseModel, Field
 from .retrieval import identifier_aware
 from .settings import settings
 
-client = OpenAI(api_key=settings.openai_api_key)
+# Explicit, because the defaults are wrong for this workload. A single
+# evaluation run makes over two hundred calls, and the SDK's default read
+# timeout is long enough that one hung connection stalls the run for minutes
+# before it even starts retrying. A short timeout with more attempts recovers
+# faster than a long one with fewer: four tries at 60s is a worse case of four
+# minutes, and it almost never reaches it.
+client = OpenAI(
+    api_key=settings.openai_api_key,
+    timeout=60.0,
+    max_retries=4,
+)
 
 # How many passages to hand the model. More passages = more chance the answer
 # is in there, but also more unrelated text for it to be distracted by, and a
