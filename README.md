@@ -792,4 +792,397 @@ uv run python scripts/evaluate.py --runs 3                   # the new default
 
 ---
 
-*Days 19–21 to follow.*
+## Day 19 — Building the instrument, and discovering it had been lying
+
+Days 15 to 18 improved the system and measured the improvements against eight
+labelled questions. This section is about the eight questions.
+
+Nothing in the pipeline changed on Day 19. The headline accuracy still moved
+from 80% to 30% to 62% to 54%, four times, in both directions. Every one of
+those moves came from changing **who wrote the questions** — and the last two
+numbers are the first ones worth repeating out loud.
+
+### The answer key is a measuring instrument, so it gets treated like one
+
+Until Day 19 the expected answers lived in `src/specrag/labels.py` as Python
+literals. They now live in `evals/questions.yaml` as data, behind a loader in
+`src/specrag/questions.py` that validates them before anything reads them.
+
+The reason was already on the record. On Day 16 a single mislabelled question
+inverted a conclusion: the code was right and the answer key was wrong, so the
+fix was applied to the wrong half of the system. When the answer key *is* the
+instrument, a typo in it is not a bug, it is a silent measurement error — and
+measurement errors do not announce themselves.
+
+A file rather than a database table, deliberately. The answer key has to be
+reviewable in a pull request, diffable against the version that produced last
+week's number, and editable by someone who has the domain knowledge but not
+the schema. None of those are properties of a row.
+
+The loader makes four mistakes impossible rather than unlikely:
+
+```python
+class Question(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    id: str = Field(pattern=r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+    q: str = Field(min_length=10)
+    kind: Kind
+    expect: list[str] = []
+    why: str = Field(min_length=20)
+```
+
+`extra="forbid"` is the line that matters, and it is the one a Java developer
+would not think to write. Jackson rejects an unknown field by default; pydantic
+**ignores** it by default. A label file containing `expct: ["6.31"]` would load
+cleanly, score zero sections, and never explain why. Seven deliberately
+malformed entries were used to prove the gate: a typo'd `kind`, a typo'd field
+name, an `unanswerable` question carrying a section number, a duplicate id. All
+seven were rejected.
+
+`why` is mandatory and has a minimum length. A label whose reasoning is not
+written down is a label nobody can audit, including the person who wrote it.
+
+### Instrument bug #9: section numbers are not unique
+
+`3.7` appears in four of the five PDFs. In the core specification it is
+"Transaction-related messages". In the SOAP specification it is "From" — an XML
+header field. Both errata sheets have one too.
+
+Scoring compared only the `section` column, ignoring the `source` column that
+ingestion had been storing since Day 16. Day 18's hits were checked afterwards
+and did all come from the right document, so that number was not inflated — but
+that was luck at eight questions, not design.
+
+The generalisable part is the asymmetry. A false hit pushes the score **up**.
+A measurement error that makes results look worse gets investigated within the
+hour; one that makes them look better gets published. This is the ninth
+instrument bug in five days, and it is the only one that would have survived
+indefinitely.
+
+Fixed with a `default_source`, a per-question override, and four lines in the
+scorer:
+
+```python
+for row in rows:
+    if self.source and row.get("source") != self.source:
+        continue                      # right number, wrong document
+```
+
+### Three metrics, three different questions
+
+```
+  hits      did any expected section appear anywhere in the passages
+  MRR       how high up the first relevant one appeared
+  coverage  how many of the expected sections were retrieved at all
+```
+
+Coverage was added on Day 19 and immediately changed what the project knew.
+A question like "what are transactional events?" names five sections; an
+overview passage ranked first scores a perfect hit and a perfect MRR while
+missing Start Transaction, Meter Values and Stop Transaction entirely.
+
+MRR and coverage also move in **opposite directions** as an answer key
+improves. Adding expected sections to a question makes MRR easier — it uses the
+rank of the *first* relevant section — and coverage harder. When
+`transactional-events` was relabelled from one section to five on domain
+advice, MRR rose from 0.792 to 0.875 with no code change whatsoever.
+
+Which is why Day 18's MRR figures in the previous section are **not comparable**
+with the ones below. The question count changed twice afterwards and the
+labels changed once. Only the per-kind coverage rows carry forward; a metric is
+comparable only while the thing doing the measuring is frozen.
+
+### Five kinds of question, because pass/fail cannot hold them
+
+```
+  lookup         one section answers it. The easy case.
+  cross-section  the answer needs two or more sections together.
+  false-premise  the question assumes a rule the spec does not impose.
+                 A correct answer contradicts the question.
+  unanswerable   not in this document. A correct answer refuses.
+  ambiguous      the corpus mentions it without specifying it. Run and
+                 reported, excluded from the headline score.
+```
+
+`ambiguous` exists for one question that the architecture structurally cannot
+answer: *"which CSMS-initiated operations does a charge point acknowledge and
+respond to?"* The answer is chapter 5's **title** — "Operations Initiated by
+Central System" — and its subsection list. No passage contains that list. 3.3
+Feature Profiles groups messages by profile rather than by direction, and
+chapter 5 has no preamble. The answer lives in the document's structure, and a
+chunk-based retriever only ever holds pieces of text.
+
+It is reported on every run and excluded from the score. Grading it honestly is
+not possible, and pretending otherwise is how a test set starts lying to you.
+
+### Who writes the questions decides what you are able to discover
+
+This is the finding worth the whole day.
+
+`scripts/propose_questions.py` drafts candidate questions from the
+specification's own table of contents. The argument for it is sound: a section
+titled `7.6. ChargePointErrorCode` is a fact about the document's structure,
+not about its content, so generating *"what are the valid values for
+ChargePointErrorCode?"* is not the system writing its own exam.
+
+It produced 50 candidates in a few seconds. Then six questions arrived from
+someone who runs chargers for a living:
+
+```
+  what is the sequence of OCPP events during a charging session?
+  what happens if the server connection is broken before a session starts?
+  how does set_charging_profile event work?
+  which OCPP messages carry a timestamp?
+  which CSMS-initiated operations does a charge point respond to?
+  how can a charger be suspended so it allows no sessions, and re-enabled?
+```
+
+The effect of adding them, with no code change:
+
+```
+                        before (8 q)     after (11 q)
+  sections covered      8/10  = 80%      10/33 = 30%
+  MRR                   0.875            0.598
+  hits                  6/6              8/11
+```
+
+Three of the six scored zero in every strategy. The 80% had been real, and it
+had been measuring the wrong thing.
+
+The cause is a vocabulary gap, and it is not subtle once seen. An operator says
+"suspend a charger"; the specification says "Change Availability to
+Inoperative". An operator says "events"; the specification says "messages" or
+"PDUs". An operator says "RFID card"; the specification says "idTag".
+
+**Fifty questions generated from section headings could never have surfaced
+this**, because they take their wording from the document. It is an exam whose
+questions were copied off the answer sheet.
+
+### A question that cannot fail is not a test
+
+Seven of the 50 candidates were deleted for one reason:
+
+```
+  what does the SendLocalListMaxLength configuration key control?
+  what does the MeterValuesSampledDataMaxLength configuration key control?
+  ...
+```
+
+The answer is contained in the subject the question names. Splitting the
+identifier answers it with no retrieval at all — the question would pass
+against an **empty index** while still adding a point to the score. The
+specification's own description for 9.1.18 restates the name and adds nothing.
+
+Two configuration-key questions were kept, because theirs is real information:
+`StopTransactionOnEVSideDisconnect` looks self-explanatory and is not. 4.10
+states that when it is false it takes priority over
+`UnlockConnectorOnEVSideDisconnect`, so cables stay locked. That is not in the
+name, and an answer that misses it is how a commissioning engineer ends up
+debugging a cable that will not release.
+
+### Then the headline score lied in the other direction
+
+43 reviewed candidates were merged, and with no code change at all:
+
+```
+                       19 q        64 q
+  sections covered     39%         62%
+  MRR                  0.601       0.736
+```
+
+46 of the 64 questions were now title-derived lookups, outvoting everything
+else three to one. A strategy could get worse at every hard question and that
+62% would barely move.
+
+So both scripts report **per kind** now, and the single average is no longer
+the answer to anything:
+
+```
+  ident+vec, retrieval only        coverage
+  lookup (46 q)                    42/46   91%
+  false-premise (10 q)             11/20   55%
+  cross-section (14 q)             15/61   25%
+```
+
+Per-kind also reversed a strategy comparison the average had flattened.
+`hybrid` and `ident+vec` are indistinguishable overall — MRR 0.708 against
+0.714 — but hybrid wins lookups 45/46 against 42/46 and loses false-premise
+8/20 against 11/20. Lookups are phrased from section titles, so keyword
+matching lands on the title and hybrid gains; where the question is not in the
+document's vocabulary, the same weighting hurts. Day 18 kept `ident+vec` on a
+margin it honestly described as possible noise. The choice holds, for a reason
+that was not visible then.
+
+### The first number here that survived its sample doubling
+
+Eight expert-style cross-section questions were added, phrased the way a
+support ticket is phrased — an outcome is asked for and the mechanism is never
+named:
+
+```
+  a driver's RFID card works at one charger but is rejected at another.
+    what should I check?
+  a charger rebooted in the middle of a session. what happens to that
+    transaction?
+  the charger was offline for most of a session. do I still get the meter
+    data for billing?
+```
+
+```
+  cross-section coverage
+     7 questions    6/30  = 20%
+    14 questions   15/61  = 25%
+```
+
+Every earlier number in this project jumped when the sample changed: 80 to 30,
+then 39 to 62. This one moved five points when the sample doubled, which makes
+25% a property of the system rather than an artefact of which questions
+happened to be in the set. **It is the first trustworthy bad number here**, and
+a trustworthy bad number is worth more than a flattering one.
+
+The question in that group that scored full coverage is the one that proves the
+diagnosis: *"a driver reserved a connector and never turned up"* got 4/4,
+because the question says "reserved" and the section is called Reserve Now. The
+single operational question that worked is the one whose wording coincided with
+the document's.
+
+### Four named failure modes, none of them the model's fault
+
+**Meta-vocabulary trap.** Words like OCPP, messages and events belong to text
+*about* the protocol, not text *of* it. "What is the sequence of OCPP events
+during a charging session?" returns `2.4. References`, `2.2. Definitions` and
+`1.5. New in OCPP 1.6`. "Which OCPP messages carry a timestamp?" returns four
+passages from the JSON and SOAP transport specifications.
+
+**Word-sense collision**, now with two independent examples. "How can a charger
+be suspended" retrieves `SuspendedEV`, a charging status, instead of
+`ChangeAvailability → Inoperative`. "How does the Central System read a meter
+reading directly" never reaches `TriggerMessage`, which is the mechanism. One
+example was an anecdote; two is a target.
+
+**Errata pollution**, three documented cases. Deferred on Day 18 pending
+measurement, measured on Day 19, and now reproducible on demand. The RFID
+question returns two of five passages from the errata sheet. It stops being
+deferrable.
+
+That same failure carries a worse finding. `RFID` occurs in exactly four chunks
+of the core specification, one of them `3.9. ID Tokens`, and retrieval returned
+none of them for a question containing the word. This is not only a vocabulary
+gap between operator and specification; search is also missing the term where
+the term is present.
+
+3.9 was deliberately **not** added to that question's expected sections. Doing
+so would raise the score by editing the answer key to suit the system, which is
+the single thing this file exists to prevent.
+
+**The refusal gap**, found in the final run and the clearest of the four. Both
+"default" false-premise questions were refused in all three runs, and
+`default-connection-timeout` refused at `cover 1/1, cited 1/1` — retrieval
+handed over the right section and the model declined anyway. The answers show
+why:
+
+```
+  "Not answerable from the provided passages... 9.1.6 describes
+   ConnectionTimeOut but provides no numerical default."
+
+  "...you would need the specification text that defines a default or states
+   that no default exists."
+```
+
+The first is substantively correct, merely framed as a retrieval shortfall. The
+second sends the reader looking for a default that does not exist, which is
+worse than silence. The prompt offers two modes, answer or refuse, and has no
+third: *the passages are sufficient to establish that the premise is false.*
+
+Four diagnosed failures across five days and not one of them was the model.
+The diagnostic cost order — **retrieval, then chunking, then prompt, then
+model** — is no longer a recommendation read somewhere. It is this project's own
+data.
+
+### A harness that cannot survive one failure never produces a number
+
+The first full three-run pass crashed after twenty minutes on a single
+`openai.APITimeoutError`, at question 44 of 74, and took every completed result
+with it.
+
+The fix is arithmetic rather than caution. 74 questions over 3 runs is **222
+calls**, so even a 1% per-call failure rate loses the whole run about nine times
+in ten. At this scale, dying on one failure is not strictness, it is a
+guarantee of never finishing.
+
+```python
+def attempt(question: str, retrieve: Retriever) -> Result | None:
+    try:
+        return answer(question, retrieve=retrieve)
+    except APIError as exc:
+        print(f"      LOST  {type(exc).__name__}: {exc}"[:110], flush=True)
+        return None
+```
+
+A question with a lost run is reported as **incomplete**, never scored on the
+runs that did return — a two-run question sitting in a three-run column is a
+figure nobody can reproduce. The client also sets `timeout=60.0,
+max_retries=4` explicitly, because four tries at sixty seconds has a worst case
+of four minutes and almost never reaches it, while the default lets one hung
+connection stall for minutes before it begins retrying.
+
+The re-run lost exactly one call and finished. The fix proved itself on its
+first outing.
+
+### The measured result
+
+74 questions, 72 scored, 127 expected sections. `ident+vec`, three runs, 222
+answers, one lost.
+
+```
+  answered when it should      60/69
+  all expected sections found  46/69
+  all expected sections cited  44/69
+  sections retrieved overall   203/380
+  refused when it should        2/2
+  verifier: 51 fabrications, 92 warnings
+```
+
+```
+  by kind           n    answered 3/3   full coverage   sections
+  lookup           45         44             41          43/47
+  false-premise    10          7              4          11/21
+  cross-section    14          9              1          21/54
+```
+
+**One cross-section question in fourteen had all of its expected sections
+retrieved.** That is the state of the system. 46/69 is not.
+
+Two independent scripts agree on the retrieval figure — 203/380 from the eval
+and 68/127 from the retrieval test, both 53%. After nine instrument bugs,
+two paths reaching the same number is its own small result.
+
+### What this section is not claiming
+
+Answer **correctness** is still unmeasured. The eval measures retrieval
+coverage, citation coverage and faithfulness; whether an answer is *right* needs
+a human or a judge model, and the judge would itself need validating against
+human labels before being trusted.
+
+The refusal scoring is coarse. Both answers quoted above score identically as
+REFUSED. Treating a refusal as a failure on a false-premise question is correct,
+because "I cannot tell you" and "it does not exist" lead an operator to
+different actions — but the instrument cannot yet tell a refusal that corrects
+the premise from one that misleads.
+
+And 51 fabrications over 222 answers is the first faithfulness figure here with
+a real sample behind it. The earlier counts of one, two and three were over nine
+answers, which is not a rate.
+
+### Run
+
+```bash
+uv run python scripts/propose_questions.py          # draft candidates from the ToC
+uv run python scripts/retrieval_test.py             # per-kind, no model calls
+uv run python scripts/evaluate.py --runs 3          # the full measurement
+```
+
+---
+
+*Days 20–21 to follow.*
+
