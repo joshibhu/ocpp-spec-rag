@@ -17,6 +17,7 @@ A number the model picks can be validated against a list we control.
 A string the model writes cannot be validated against anything.
 """
 
+import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
@@ -24,6 +25,7 @@ from openai import OpenAI
 from pydantic import BaseModel, Field
 
 from .retrieval import identifier_aware
+from .usage import Usage
 from .settings import settings
 
 # Explicit, because the defaults are wrong for this workload. A single
@@ -141,6 +143,7 @@ class Result:
     question: str
     passages: list[dict[str, Any]]   # exactly what we sent, in order
     reply: GroundedAnswer            # exactly what came back
+    usage: Usage                     # what it cost to get it
 
     def cited(self) -> list[dict[str, Any]]:
         """Resolve the model's numbers to OUR rows.
@@ -160,6 +163,7 @@ def answer(
     question: str,
     limit: int = RETRIEVE,
     retrieve: Retriever = identifier_aware,
+    model: str | None = None,
 ) -> Result:
     """Retrieve, then answer from what was retrieved.
 
@@ -174,8 +178,14 @@ def answer(
     # what order it is read in.
     rows = _in_document_order(retrieve(question, limit=limit))
 
+    # `model` is injected for the same reason `retrieve` is: Day 18 proved a
+    # strategy swap is only trustworthy when nothing else moves, and the same
+    # holds for a model swap. Defaulting to settings keeps every existing
+    # caller on the configured model.
+    chosen = model or settings.chat_model
+    started = time.perf_counter()
     completion = client.chat.completions.parse(
-        model=settings.chat_model,
+        model=chosen,
         messages=[
             {"role": "system", "content": SYSTEM},
             {
@@ -188,4 +198,24 @@ def answer(
         # lowering it would not buy much: the grounding comes from the
         # passages and the instruction, not from sampling settings.
     )
-    return Result(question=question, passages=rows, reply=completion.choices[0].message.parsed)
+    elapsed = time.perf_counter() - started
+
+    # The SDK can return usage as None. Recording zeros would make a run look
+    # free; -1 would poison the arithmetic. Zeros with the real model name is
+    # the least misleading of the three, and the token total being implausibly
+    # low is itself the signal that something was not reported.
+    counts = completion.usage
+    return Result(
+        question=question,
+        passages=rows,
+        reply=completion.choices[0].message.parsed,
+        usage=Usage(
+            model=chosen,
+            prompt_tokens=counts.prompt_tokens if counts else 0,
+            completion_tokens=counts.completion_tokens if counts else 0,
+            seconds=elapsed,
+            reasoning_tokens=getattr(
+                counts.completion_tokens_details, "reasoning_tokens", 0
+            ) if counts and counts.completion_tokens_details else 0,
+        ),
+    )
