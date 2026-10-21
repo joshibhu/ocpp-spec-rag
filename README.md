@@ -1153,6 +1153,14 @@ answers, one lost.
 **One cross-section question in fourteen had all of its expected sections
 retrieved.** That is the state of the system. 46/69 is not.
 
+With one correction to that sentence, found on Day 20. Two of the fourteen
+expect six sections while retrieval returns five, so they cannot win that
+column at all: the honest figure is **one of the twelve where full coverage
+is arithmetically possible.** The ceiling costs 2 sections out of 61, so
+15/61 is a real failure rather than an artefact — but a headline that cannot
+be achieved is not a headline, and this is the tenth time the instrument
+needed correcting rather than the system.
+
 Two independent scripts agree on the retrieval figure — 203/380 from the eval
 and 68/127 from the retrieval test, both 53%. After nine instrument bugs,
 two paths reaching the same number is its own small result.
