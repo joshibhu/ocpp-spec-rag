@@ -19,6 +19,7 @@ A string the model writes cannot be validated against anything.
 
 import time
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Callable
 
 from openai import OpenAI
@@ -53,18 +54,55 @@ RETRIEVE = 5
 #
 # Asking for fields rather than prose means the citation arrives as data
 # instead of something we have to pull out of a sentence with a regex.
+class Premise(str, Enum):
+    """What the passages say about what the question takes for granted."""
+
+    HOLDS = "holds"
+    CONTRADICTED = "contradicted"
+    UNSUPPORTED = "unsupported"
+    SUBJECT_ABSENT = "subject_absent"
+
+
+# FIELD ORDER IS LOAD-BEARING. Structured output is generated top to bottom,
+# so `premise` is emitted before a word of prose exists. Once the model has
+# written "contradicted" it cannot then write an answer that confirms the
+# question — the verdict constrains the prose, instead of prose being
+# summarised afterwards into a verdict it was never checked against.
 class GroundedAnswer(BaseModel):
     """A grounded answer to a question about the OCPP specification."""
 
-    answerable: bool = Field(
-        description="True only if the passages below contain the answer."
+    premise: Premise = Field(
+        description=(
+            "What the passages say about what the question assumes. The ONE "
+            "place where refusal is decided: only subject_absent is a refusal."
+        )
     )
     answer: str = Field(
         description="The answer, or a short statement of what is missing."
     )
     used: list[int] = Field(
-        description="Passage numbers actually used. Empty if not answerable."
+        description=(
+            "Passage numbers actually used. Empty only when the premise is "
+            "subject_absent."
+        )
     )
+
+    @property
+    def answerable(self) -> bool:
+        """Derived from `premise`, never asked for separately.
+
+        It was a second field for three prompt rounds, and in every one of
+        them the model set premise to "unsupported" - correctly - and
+        answerable to false in the same breath. It was being asked the same
+        question twice in two different words, and the word with "answer" in
+        it always won.
+
+        Two fields that must agree are one field. A plain @property is not a
+        pydantic field, so this is not in the schema the model is sent: there
+        is no second opinion to disagree with. (Java: two booleans encoding
+        one state, replaced by the enum they were always describing.)
+        """
+        return self.premise is not Premise.SUBJECT_ABSENT
 
 
 SYSTEM = """You answer questions about the OCPP protocol using ONLY the \
@@ -74,9 +112,17 @@ CPO engineers who will act on what you say.
 Rules:
 1. Use ONLY the passages. Not your own knowledge of OCPP, even if you are \
 certain it is correct, and even if the passages are incomplete.
-2. If the passages do not contain the answer, set answerable to false and \
-say what is missing. This is a correct outcome, not a failure. A wrong \
-answer costs an integrator days; "not in this spec" costs them a minute.
+2. If the passages do not discuss the SUBJECT of the question at all, set \
+premise to subject_absent and say what is missing. This is a correct \
+outcome, not a failure. A wrong answer costs an integrator days; "not in \
+this spec" costs them a minute.
+
+   subject_absent is the only refusal, and it is about the subject, never \
+about the thing the question assumes. If the passages discuss the subject, \
+you have an answer - even when the only honest answer is that the \
+assumption is wrong. "The spec sets no default; it is a configuration key \
+the operator sets" IS an answer. Rule 6 decides which of the other three \
+values applies.
 3. Do NOT write section numbers, page numbers, or "§" in your answer. Refer \
 to passages only as [1], [2]. The reference is added afterwards from our own \
 records.
@@ -94,7 +140,37 @@ the spec says a Charge Point MAY send one on a status change. Both quotes \
 were accurate. The reader would still have concluded the opposite of the \
 truth. If the question assumes an obligation the passages do not impose, \
 say so plainly.
-6. Be brief. Two or three sentences unless the question needs a list."""
+6. `premise` is the single place where you record what the passages say \
+about the question's assumption. Set it to exactly one of:
+
+   - holds: the passages support what the question takes for granted.
+   - contradicted: the passages state the opposite. A question saying MUST \
+where the passages say MAY, or "required" where the table says Optional, is \
+contradicted. A rule that applies only when a configuration key is set to a \
+particular value does not make an unconditional MUST true: if the question \
+asks when something MUST happen and the passages leave it to the Charge \
+Point or to a configuration key, that is contradicted, not holds.
+   - unsupported: the question assumes something the passages cover but do \
+not establish - a default value, a mandated interval, an obligation that is \
+only a configuration key the operator sets.
+
+   A configuration key's own entry in the Standard Configuration Key Names \
+and Values chapter is the COMPLETE definition of that key. If you are \
+holding that entry and it declares no default value, then the specification \
+sets no default. That is an established fact, not missing information: say \
+it, and do not send the reader to another chapter to look for a default that \
+the key's own definition would have carried.
+
+   - subject_absent: the passages do not discuss the subject at all. This \
+is the ONLY value that means you are not answering. Choose it when the \
+topic is missing, not when the topic is present and the assumption is wrong.
+
+   A FALSE PREMISE IS NOT A MISSING SUBJECT. holds, contradicted and \
+unsupported all mean you ARE answering: open with the correction - what the \
+question assumes, then what the passages actually say. Reaching for \
+subject_absent there throws away an answer you are already holding, and \
+sends the reader off to look for a rule that does not exist.
+7. Be brief. Two or three sentences unless the question needs a list."""
 
 
 def _in_document_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
