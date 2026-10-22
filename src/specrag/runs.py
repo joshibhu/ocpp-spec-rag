@@ -118,6 +118,19 @@ def record(run: RunRecord, path: Path = RUNS_PATH) -> str:
     return run_id
 
 
+# Fields added to Config after runs had already been written. An append-only
+# log is read by code newer than the code that wrote it, so the reader has to
+# tolerate lines from before a field existed - the one migration a table would
+# have forced and a file quietly does not.
+#
+# The value here must mean "not set", never the value a later run happened to
+# use. "" is honest for effort: those runs really did use the provider's
+# default. Backfilling a guess would make old runs look like they were
+# configured the new way, which is the exact failure fingerprints exist to
+# prevent, arriving through the back door.
+LEGACY_DEFAULTS: dict[str, Any] = {"effort": ""}
+
+
 def load(path: Path = RUNS_PATH) -> list[RunRecord]:
     """Every recorded run, oldest first. Missing file means no runs yet."""
     if not path.exists():
@@ -127,7 +140,8 @@ def load(path: Path = RUNS_PATH) -> list[RunRecord]:
         if not raw.strip():
             continue
         data = json.loads(raw)
-        out.append(RunRecord(config=Config(**data.pop("config")), **data))
+        config = {**LEGACY_DEFAULTS, **data.pop("config")}
+        out.append(RunRecord(config=Config(**config), **data))
     return out
 
 

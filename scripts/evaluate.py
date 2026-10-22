@@ -45,7 +45,7 @@ from specrag.answer import RETRIEVE, SYSTEM, GroundedAnswer, Result, Retriever, 
 from specrag.questions import QUESTIONS_PATH, Question, load
 from specrag.retrieval import STRATEGIES
 from specrag.settings import settings
-from specrag.store import index_summary
+from specrag.store import index_identity, index_summary
 from specrag.verify import verify
 
 
@@ -70,7 +70,7 @@ def configuration(strategy: str, passes: int, note: str,
             SYSTEM, json.dumps(GroundedAnswer.model_json_schema(), sort_keys=True)
         ),
         questions=runlog.fingerprint(QUESTIONS_PATH.read_text()),
-        index=index_summary(),
+        index=index_identity(),
         note=note,
     )
 

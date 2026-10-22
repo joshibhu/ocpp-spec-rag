@@ -20,16 +20,21 @@ four questions and breaks two reads identically to a fix that helps two and
 breaks none, until the ids are on screen.
 """
 
+import re
 import sys
+from dataclasses import fields
 
-from specrag.runs import RunRecord, load
+from specrag.runs import Config, RunRecord, load
 
-# Fields whose movement makes two numbers incomparable rather than merely
-# different. `note` is excluded because it describes a run instead of
-# configuring one; `runs` is included because a 1-pass and a 3-pass number
-# are different statistics, not the same statistic measured twice.
-CONFIG_FIELDS = ("strategy", "model", "top_k", "runs", "prompt",
-                 "questions", "index")
+# Derived from Config, never restated. Written out by hand, this list missed
+# `effort` the moment Config gained it - so the one experiment whose single
+# changed field was effort compared as though nothing had been configured
+# differently. A tool built to catch unattributable comparisons produced one.
+#
+# `note` is excluded because it describes a run instead of configuring it.
+# `runs` is NOT excluded: a 1-pass and a 3-pass number are different
+# statistics, not the same statistic measured twice.
+CONFIG_FIELDS = tuple(f.name for f in fields(Config) if f.name != "note")
 
 
 def label(run: RunRecord) -> str:
@@ -57,9 +62,26 @@ def find(runs: list[RunRecord], wanted: str) -> RunRecord:
     return hits[0]
 
 
+AGE = re.compile(r"\s*\([^)]*ago\)")
+
+
+def comparable_value(name: str, value: object) -> object:
+    """Strip the parts of a stored value that move without being changed.
+
+    Runs recorded before index_identity() existed hold index_summary()'s
+    prose, which carries a relative age. Normalising it here rather than
+    rewriting those lines keeps the log append-only: the reader tolerates
+    what an older writer produced, exactly as LEGACY_DEFAULTS does.
+    """
+    if name == "index" and isinstance(value, str):
+        return AGE.sub("", value)
+    return value
+
+
 def differences(before: RunRecord, after: RunRecord) -> list[str]:
     return [f for f in CONFIG_FIELDS
-            if getattr(before.config, f) != getattr(after.config, f)]
+            if comparable_value(f, getattr(before.config, f))
+            != comparable_value(f, getattr(after.config, f))]
 
 
 def compare(first: str, second: str) -> None:

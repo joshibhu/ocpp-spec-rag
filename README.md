@@ -1190,7 +1190,436 @@ uv run python scripts/retrieval_test.py             # per-kind, no model calls
 uv run python scripts/evaluate.py --runs 3          # the full measurement
 ```
 
+## Day 20 — Measuring the cost, and losing two experiments to the measurement
+
+Day 20 was planned as five experiments. Three of them were cost experiments,
+and not one of the three was based on a measurement — they were based on the
+ordinary engineering instinct that a shorter prompt is a cheaper prompt.
+
+Two API calls killed two of them before any of them ran.
+
+### Where the money actually goes
+
+`src/specrag/usage.py` records what a call cost and how long it took. The
+first two measurements:
+
+```
+question 1:  in 1130  | out 3737 (reasoning 3648) | 20.0s | answer 283 chars
+question 2:  in 2246  | out 1493 (reasoning 1408) | 10.4s
+```
+
+At $0.05 per million input tokens and $0.40 per million output:
+
+```
+question 1:  input 3.6% of the bill      question 2:  input 16%
+both together: input 7.5%, reasoning 89%
+```
+
+The first of those numbers was quoted as "input is 4% of the bill" before the
+second question was asked. It came from a sample of one, and the honest figure
+is a range. That is the fourth time this project has published a number that
+did not survive its sample growing, and the first time it happened inside a
+single afternoon.
+
+Either way the conclusion holds, and it holds in a direction nobody plans for:
+
+```
+a full three-pass evaluation (222 answers):  Rs 26.33, 104 minutes
+cutting top-k from 5 to 3 would save:        about Rs 0.66
+```
+
+**Two planned experiments died on that arithmetic.** "Send fewer passages to
+save money" and "make chunks smaller to save money" both shrink the input
+side, which is 4-16% of the bill. They are still legitimate *accuracy*
+experiments — fewer passages may distract the model less — but as cost work
+they are noise. A third died for a different reason: `gpt-5-nano` is already
+the cheapest model in its family, so "try a cheaper model" has nowhere to go.
+
+**And one experiment came back from the dead.** When the input side is 7% of
+the bill, raising top-k from 5 to 8 costs about one rupee on a full run. Under
+the old instinct that was "60% more prompt" and sounded expensive. It is a
+rupee. The measurement killed two experiments and unlocked a third, which is
+the clearest argument for measuring first that this project has produced.
+
+```python
+    @property
+    def usd(self) -> float | None:
+        """None when the model's price is unknown — not zero.
+
+        Zero would quietly add nothing to a total and make an unpriced
+        experiment look free, which is the most expensive kind of wrong.
+        """
+```
+
+### The refusal gap was two fields encoding one state
+
+Day 19 found that both "default" false-premise questions were refused in all
+three runs, one of them at `cover 1/1, cited 1/1` — the correct passage
+retrieved, cited, and still refused. Retrieval was blameless, so the diagnosis
+was the prompt.
+
+Three prompt rounds followed. They moved one of five probe questions and
+introduced one regression (a question that had cited its source stopped citing
+anything). In every round the model produced the same disagreement with
+itself:
+
+```
+premise=unsupported      <- correct
+answerable=False         <- wrong
+```
+
+The fourth attempt stopped arguing with the model and read the schema instead.
+`premise` and `answerable` were two fields encoding one state, decided
+separately, and the model was being asked the same question twice in two
+different words. The word with "answer" in it won every time.
+
+```python
+class Premise(str, Enum):
+    HOLDS = "holds"
+    CONTRADICTED = "contradicted"
+    UNSUPPORTED = "unsupported"
+    SUBJECT_ABSENT = "subject_absent"
+```
+
+```python
+    @property
+    def answerable(self) -> bool:
+        """Derived from `premise`, never asked for separately.
+
+        Two fields that must agree are one field. A plain @property is not a
+        pydantic field, so this is not in the schema the model is sent: there
+        is no second opinion to disagree with. (Java: two booleans encoding
+        one state, replaced by the enum they were always describing.)
+        """
+        return self.premise is not Premise.SUBJECT_ABSENT
+```
+
+Every caller still reads `result.reply.answerable` and none of them changed.
+Turning `answerable` into a three-valued field would have broken four files
+and, worse, would have broken the Day 19 baseline on the same commit as the
+fix.
+
+One line of the prompt had to be withdrawn as well, because it was false:
+
+> A FALSE PREMISE IS NOT A MISSING ANSWER
+
+From the model's position, "the specification states no default" *is* a
+missing answer. What was not missing was the **subject**. Three rounds were
+spent trying to make a model accept something untrue, and it declined, which
+is the behaviour the prompt asks for everywhere else.
+
+### Running a bigger model to decide whose fault it is
+
+Experiment 5 was "upgrade the model", placed last because four diagnosed
+failures across Days 15-19 were never the model's fault. But five calls on
+`gpt-5-mini`, with the identical prompt and passages, cost about two rupees
+and settled a question that prompt round four could not:
+
+```
+                        gpt-5-nano            gpt-5-mini (same prompt)
+default-conn-timeout    unsupported/refused   unsupported/refused
+default-heartbeat       unsupported/refused   unsupported/refused
+meter-values-must       holds                 contradicted
+"General rule:" leak    present               present, in capitals
+```
+
+The verdict split three ways, and that is the whole value of it. The
+mislabelling was a **model** limit — a stronger model obeyed the same prompt.
+The refusal was a **prompt** problem — a stronger model made the identical
+mistake. And the prompt's internal label leaking into user-facing prose
+appeared on both, which makes it a prompt bug beyond argument.
+
+**The diagnosis order on Day 19 is an order for fixing, not for diagnosing.**
+When a diagnostic is five calls, running it out of order is cheap; the mistake
+would be shipping it as the fix.
+
+### Absence is not retrievable
+
+`gpt-5-mini` wrote the most useful sentence of the day while getting the
+answer wrong:
+
+> You need the part of the specification that declares the default value to
+> answer this.
+
+It is not being lazy. It holds five passages out of 405 chunks, and proving
+"no default exists anywhere in this specification" from five passages is
+proving a negative from a sample. Retrieval never reports that what it
+returned was complete.
+
+**This is neither a prompt bug nor a model bug. It is a limit of top-k
+retrieval.** A RAG system cannot answer "is X absent from the corpus" by
+retrieving, because absence does not retrieve.
+
+A domain expert *can* answer it, and the difference is one fact: a
+configuration key's entry in chapter 9.1 is the complete definition of that
+key, so a missing Default row means the specification sets none. Supplying
+that fact to the prompt is legitimate; it is knowledge the model lacks about
+the document's structure. Editing the answer key to stop asking would not be.
+The project's own Day 17 note turned out to be describing this case:
+
+> `cover 1/1, cited 1/1` -> if it is still wrong, the reason is one only a
+> domain expert can name.
+
+### Two wrong diagnoses, caught by checking
+
+`default-heartbeat-interval` refused while `default-connection-timeout`
+answered — the same question shape, the same chapter. The obvious suspect was
+chunking: `9.1.10. HeartbeatInterval (1/2)` exists in this corpus, so a split
+table row was a plausible cause. The database said otherwise:
+
+```
+9.1.10. HeartbeatInterval      p104  234 chars   one chunk
+9.1.6.  ConnectionTimeOut      p103  403 chars   one chunk
+```
+
+Both complete, neither carrying a Default row, so the two questions have
+identical truth. The model is splitting `subject_absent` from `unsupported` on
+**how much text it received**, not on whether the subject is present. An
+afternoon would have gone into fixing chunking that was not broken.
+
+The same read turned up a real ingest bug that was not being looked for — page
+footers bleeding into the middle of table rows:
+
+```
+HeartbeatInterval Required/optional required 99 Accessibility RW Type integer
+```
+
+That `99` is a page number. It is recorded and not yet fixed.
+
+### Instrument correction #11
+
+The three-pass result after the schema fix, beside Day 19's:
+
+```
+                        Day 19      Day 20
+answered when it should  60/69       63/70
+sections found           46/69       47/70
+sections cited           44/69       45/70
+refused when it should    2/2         2/2
+fabrications               51          49
+warnings                   92          77
+calls lost                  1           0
+
+by kind        answered          full cover
+lookup         44/45 -> 46/46     41 -> 42
+false-premise   7/10 ->  7/10      4 ->  4
+cross-section   9/14 -> 10/14      1 ->  1
+```
+
+`cross-section` sections appeared to regress from 21/54 to 15/61. Retrieval is
+deterministic and nothing in it changed, so the regression was impossible, and
+the arithmetic says which number was wrong:
+
+```
+Day 20:  per-kind 68/127, overall 204/381   ->  68 x 3 = 204  ✓  127 x 3 = 381  ✓
+Day 19:  per-kind 75/122, overall 203/380   ->  75 x 3 = 225  ✗
+```
+
+Day 19's single lost call removed a question from the per-kind tally while its
+two completed runs still counted in the overall total. Day 19's independent
+retrieval-only test reported cross-section 15/61 — exactly the Day 20 figure.
+**`21/54` was the artefact; `15/61` was true on both days.** Eleventh time the
+instrument needed correcting rather than the system.
+
+### The fix worked and the headline cannot show it
+
+`false-premise answered` did not move: 7/10 before, 7/10 after. The
+per-question log, built the same day, says something else:
+
+```
+default-heartbeat-interval   answered 2/3  ['unsupported','unsupported','subject_absent']
+default-connection-timeout   answered 1/3  ['subject_absent','subject_absent','unsupported']
+csms-start-charging-...      answered 2/3  ['contradicted','contradicted','subject_absent']
+```
+
+All three refused in all three runs on Day 19. They now answer sometimes. A
+question passes only if it passes every run — which is the right bar, because
+a system that works two times in three does not work — so the headline scores
+all three as failures and reports no change at all.
+
+**The remaining obstacle is not the prompt. It is non-determinism.** That is a
+different problem with different fixes, and it was invisible until the premise
+values were recorded per run.
+
+One earlier claim needs narrowing on the same evidence. "`contradicted` is a
+model limit, confirmed" was too broad: `gpt-5-nano` returns `contradicted`
+correctly on three questions in all three runs. It fails on exactly the two
+where the specification's obligation is conditional on a configuration key.
+
+And one question exposed something worse than a label. `csms-read-meter-on-demand`
+retrieved **zero of its three expected sections**, reported `premise=holds`,
+and answered anyway — a retrieval failure papered over by a confident answer.
+
+### A run is not finished until it is written down
+
+Day 19 produced five headline numbers from an unchanged pipeline, and each
+move was only discoverable because the previous number happened to still be on
+screen. Day 20 runs five experiments, so `evals/runs.jsonl` now holds one
+append-only line per run: configuration, totals, per-kind tallies, per-question
+verdicts.
+
+Comparability is enforced by **fingerprints, not version numbers**:
+
+```python
+    prompt: str          # fingerprint of SYSTEM + the response schema
+    questions: str       # fingerprint of the answer key file
+```
+
+A version number is a thing a human forgets to increment, and a forgotten bump
+makes two incomparable runs look comparable — worse than keeping no record at
+all. The prompt fingerprint covers the **schema** as well as the system
+message, because the schema is sent to the model and is therefore part of the
+prompt whether or not it reads like one. Piece 2 moved a refusal to an answer
+by deleting a schema field and changing no prose; a fingerprint over `SYSTEM`
+alone would have called those two runs comparable.
+
+The answer text is deliberately not stored. The prompt requires the model to
+quote the specification's exact normative wording, the OCPP specifications are
+copyright Open Charge Alliance, and this repository is public. Verdicts,
+counts and section numbers carry the measurement without carrying the prose —
+the rule `evals/questions.yaml` already follows.
+
+`scripts/compare_runs.py` reads the log and refuses to compare two runs when
+more than one configuration field moved:
+
+```
+  NOT COMPARABLE: 3 fields moved together, so a difference in the result
+  cannot be attributed to any one of them. Re-run with one change at a time.
+```
+
+It also diffs verdicts **by question id**, because a headline moving from 46
+to 48 is two questions, and "four fixed, two broken" reads identically to "two
+fixed, nothing broken" until the ids are on screen.
+
+Two smaller guards, both answering mistakes already made: `--limit N` marks
+its own run `PARTIAL` in the log, so a three-question number can never later
+be read as a result; and a run that mixes a priced model with an unpriced one
+prints `cost unknown` rather than a total that is really a floor.
+
+### The cost lever, measured: 4.9x faster and less safe
+
+`reasoning_effort=low`, three passes, nothing else touched — the first
+experiment in this project whose comparison the tooling itself certified as
+single-variable:
+
+```
+changed  effort:   ->  low
+
+answered   63/70  ->  66/70   +3
+covered    47/70  ->  47/70   =
+cited      45/70  ->  42/70   -3
+sections   204/381 -> 204/381  =
+false-premise answered   7/10 -> 9/10
+cross-section answered  10/14 -> 11/14
+
+6245s, Rs 26.33  ->  1271s, Rs 5.84
+```
+
+**4.9x faster, 4.5x cheaper, three more questions answered.** `covered` and
+`sections` did not move by a single section, which is the check that the run
+was honest: retrieval does not depend on reasoning, so anything other than
+zero there would have meant the harness was measuring something else.
+
+Two results were not expected. The first is that **less reasoning produced
+fewer refusals** — false-premise answered went from 7/10 to 9/10. The model
+had been reasoning itself into refusal. The second is in the verifier's flags:
+
+```
+default:  unquoted-normative  70   altered-quote 27   unverified-quote 21
+low:      unquoted-normative 107   altered-quote  7   unverified-quote 12
+```
+
+Fabrications fell 61%, from 49 to 19, and warnings rose 44%. Both have the
+same cause: **at low effort the model stops quoting and starts paraphrasing.**
+A model that does not quote cannot mangle a quote, which is why
+`altered-quote` fell by three quarters; and a model that paraphrases states
+normative requirements in its own words, which is why `unquoted-normative`
+rose by half.
+
+That is not a win. It is the trade landing on the one axis this system cannot
+afford to lose, and the prompt says why:
+
+> Quote the spec's exact wording for anything normative - SHALL, MAY, MUST,
+> SHOULD. The difference between SHALL and MAY is the difference between a
+> compliance defect and a vendor's choice, so never paraphrase it.
+
+**Cheaper, faster, answers more, fabricates less — and looser on the one
+distinction a CPO engineer will be held to.** On this evidence low effort is
+not adoptable as a default, and `medium` is the obvious next measurement: the
+untested middle of a three-point curve whose ends are now known.
+
+One further admission. Deciding whether those 37 extra warnings are real
+paraphrases of normative text or verifier false positives requires reading the
+answers, and the answers are deliberately not stored because they quote a
+copyrighted specification. **That is the price of the copyright decision, and
+it is a real price rather than a theoretical one** — it is being paid in this
+very paragraph.
+
+### Two bugs in the instrument, found by using it
+
+The comparison above only reads correctly after two fixes, and both were found
+by running the tool rather than by reviewing it.
+
+**The field list drifted from the dataclass.** `compare_runs.py` held
+`CONFIG_FIELDS` as a hand-written tuple, written before `effort` existed. So
+the single experiment whose single changed field was `effort` compared as
+though nothing had been configured differently — a tool built to catch
+unattributable comparisons produced one. The list is now derived:
+
+```python
+CONFIG_FIELDS = tuple(f.name for f in fields(Config) if f.name != "note")
+```
+
+**The index changed every two and a half hours without being touched.** The
+configuration stored `index_summary()`, whose entire purpose is to shout the
+index's *age* because a stale index was the bug six times this sprint. In a run
+log that makes two runs over one unchanged index compare as differently
+configured:
+
+```
+changed  index: ... built 2026-10-07 18:36 (14.7 days ago)
+            ->  ... built 2026-10-07 18:36 (14.8 days ago)
+```
+
+One function had been given two incompatible jobs. The fix is two functions:
+`index_identity()` for the log, `index_summary()` for the human. Runs already
+written keep the old prose, and the reader normalises it away rather than the
+log being rewritten — append-only means the reader tolerates what an older
+writer produced, the same rule that `LEGACY_DEFAULTS` follows for a field that
+did not exist yet.
+
+### What Day 20 is not claiming
+
+The refusal gap is not closed. Three of ten false-premise questions moved from
+never answering to sometimes answering, and at the three-run bar that counts
+as nothing.
+
+`reasoning_effort=low` is measured, not recommended. Its accuracy trade is
+against quoting discipline, and judging that trade needs answer text this
+repository does not keep. `medium` is unmeasured.
+
+Two of the five planned experiments were never run: the errata-source filter
+and top-k 5 → 8. Both still have evidence behind them — three documented cases
+of errata passages displacing real ones, and a retrieval ceiling of 59 of 61
+expected cross-section sections at top-5.
+
+The price figures behind every rupee in this section are the ones in
+`usage.py` and have not been checked against the provider's pricing page. The
+ratios would have to be wrong by an order of magnitude to change any
+conclusion here, but the absolute numbers should be read as arithmetic rather
+than as a bill.
+
+### Run
+
+```bash
+uv run python scripts/evaluate.py --runs 3 --note "what this run is testing"
+uv run python scripts/evaluate.py --limit 3            # test the harness
+uv run python scripts/evaluate.py --effort low         # reasoning effort
+uv run python scripts/compare_runs.py                  # list recorded runs
+uv run python scripts/compare_runs.py <id-a> <id-b>    # compare two
+```
+
 ---
 
-*Days 20–21 to follow.*
+*Day 21 to follow.*
 

@@ -209,6 +209,25 @@ def keyword_search(question: str, limit: int = 5) -> list[dict[str, Any]]:
     )
 
 
+def index_identity() -> str:
+    """What the index IS, with nothing in it that moves on its own.
+
+    index_summary() exists to shout the index's AGE, because six times this
+    sprint a stale index was the bug. That makes it exactly wrong for a run
+    log: "14.7 days ago" becomes "14.8 days ago" after three hours, so two
+    runs over the same unchanged index compare as differently configured -
+    and a comparison that reports a change nobody made is as useless as one
+    that misses a change somebody did.
+
+    One function, two callers, two incompatible requirements. The fix is two
+    functions, not a flag.
+    """
+    row = query("SELECT count(*) AS n, max(created_at) AS built FROM chunks")[0]
+    if not row["n"]:
+        return "empty"
+    return f"{row['n']} chunks @ {row['built'].isoformat(timespec='seconds')}"
+
+
 def index_summary() -> str:
     """One line describing the index, printed before anything trusts it.
 
