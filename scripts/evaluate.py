@@ -34,15 +34,43 @@ whether a fabrication was fixed or merely absent this time. Anything reported
 from one run is an anecdote.
 """
 
+import json
 import sys
+import time
 
 from openai import APIError
 
-from specrag.answer import Result, Retriever, answer
-from specrag.questions import Question, load
+from specrag import runs as runlog
+from specrag.answer import RETRIEVE, SYSTEM, GroundedAnswer, Result, Retriever, answer
+from specrag.questions import QUESTIONS_PATH, Question, load
 from specrag.retrieval import STRATEGIES
+from specrag.settings import settings
 from specrag.store import index_summary
 from specrag.verify import verify
+
+
+def configuration(strategy: str, passes: int, note: str) -> runlog.Config:
+    """Capture what must not move while two numbers are being compared.
+
+    The prompt fingerprint covers the schema as well as the system message,
+    because the schema is sent to the model and is therefore part of the
+    prompt whether or not it reads like one. Day 20 piece 2 changed only the
+    schema - it removed a field - and that change alone moved a refusal to an
+    answer. A fingerprint over SYSTEM only would have called those two runs
+    comparable.
+    """
+    return runlog.Config(
+        strategy=strategy,
+        model=settings.chat_model,
+        top_k=RETRIEVE,
+        runs=passes,
+        prompt=runlog.fingerprint(
+            SYSTEM, json.dumps(GroundedAnswer.model_json_schema(), sort_keys=True)
+        ),
+        questions=runlog.fingerprint(QUESTIONS_PATH.read_text()),
+        index=index_summary(),
+        note=note,
+    )
 
 
 def section_prefix(section: str | None) -> str:
@@ -78,13 +106,29 @@ def attempt(question: str, retrieve: Retriever) -> Result | None:
         return None
 
 
-def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> None:
+def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1,
+        note: str = "", limit: int = 0) -> None:
+    """--limit exists to test the harness, never to report a number.
+
+    A full pass is twenty-plus minutes, and on Day 19 a harness bug was
+    discovered at minute twenty by the run dying. Proving the plumbing on
+    three questions costs forty seconds. Any run with a limit is recorded
+    with its note marked PARTIAL so it can never be read as a result.
+    """
     retrieve = STRATEGIES[strategy]
     questions = load()
+    config = configuration(
+        strategy, runs, f"PARTIAL ({limit} questions) {note}".strip() if limit else note
+    )
+    started, clock = runlog.now(), time.perf_counter()
+    details: list[dict] = []
+    spend, unpriced = 0.0, 0
 
     print(index_summary())
     print(f"  {questions.summary()}")
     print(f"  strategy: {strategy}   runs per question: {runs}")
+    print(f"  model: {config.model}   top-k: {config.top_k}"
+          f"   prompt: {config.prompt}   key: {config.questions}")
     print()
     print("  ans = answered (did not refuse)   cover = expected sections retrieved")
     print("  cited = of those, model used      flags = verifier findings")
@@ -103,11 +147,13 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
     scored_answerable = scored_refusals = 0
     lost_calls = incomplete = 0
 
-    for case in questions.questions:
+    asked = questions.questions[:limit] if limit else questions.questions
+    for case in asked:
         answered = 0
         cover_got, want = 0, 0          # retrieval is deterministic: one value
         cited_gots: list[int] = []      # generation is not: one per run
         flags: list[str] = []
+        premises: list[str] = []        # also one per run, for the same reason
 
         lost_runs = 0
 
@@ -120,6 +166,11 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
             report = verify(result)
 
             answered += result.reply.answerable
+            premises.append(result.reply.premise.value)
+            if result.usage.usd is None:
+                unpriced += 1
+            else:
+                spend += result.usage.usd
             cover_got, want = case.coverage(result.passages)
             cited_gots.append(case.coverage(result.cited())[0])
             sections_got += cover_got
@@ -155,6 +206,22 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
                 scored_refusals += 1
                 refusals_right += answered == 0
 
+        # Per question, so a later run can be diffed against this one at the
+        # level the fix happened at. A headline that moved by one tells you
+        # nothing about WHICH one moved, and "which one" is the whole of the
+        # diagnosis. The answer text is deliberately absent - see runs.py.
+        details.append({
+            "id": case.id,
+            "kind": case.kind.value,
+            "scored": case.scored,
+            "premise": premises,
+            "answered": answered,
+            "cover": [cover_got, want],
+            "cited": cited_gots,
+            "flags": flags,
+            "lost": lost_runs,
+        })
+
         print(f"  {'~' if not case.scored else ' '}"
               f" {f'LOST {lost_runs}/{runs}' if lost_runs else verdict(case, answered, runs):>8}"
               f"  {span([cover_got], want):>7}"
@@ -179,7 +246,28 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1) -> No
 
     print()
     print(f"  verifier: {errors} fabrications, {warnings} warnings"
-          f"  (over {runs * len(questions.questions)} answers)")
+          f"  (over {runs * len(asked)} answers)")
+    run_id = runlog.record(runlog.RunRecord(
+        config=config,
+        totals={
+            "answered": answered_right, "covered": covered_right,
+            "cited": cited_right, "refusals": refusals_right,
+            "scored_answerable": scored_answerable,
+            "scored_refusals": scored_refusals,
+            "sections": [sections_got, sections_want],
+            "errors": errors, "warnings": warnings,
+            "lost": lost_calls, "incomplete": incomplete,
+        },
+        per_kind=per_kind,
+        per_question=details,
+        started=started,
+        seconds=round(time.perf_counter() - clock, 1),
+        usd=None if unpriced else round(spend, 6),
+        calls=runs * len(asked) - lost_calls,
+    ))
+    print(f"  recorded as {run_id} in evals/runs.jsonl"
+          f"   ({runlog.rupees_or_unpriced(spend, unpriced)})")
+
     print()
     print(f"  {len(questions.questions)} questions is not a measurement — it is a smoke")
     print("  test. 60-100 labelled questions is where a percentage starts")
@@ -251,4 +339,6 @@ if __name__ == "__main__":
         sys.exit(f"unknown strategy {chosen!r} — pick from {', '.join(STRATEGIES)}")
     run(verbose="-v" in sys.argv,
         strategy=chosen,
-        runs=int(option("--runs", "1")))
+        runs=int(option("--runs", "1")),
+        note=option("--note", ""),
+        limit=int(option("--limit", "0")))
