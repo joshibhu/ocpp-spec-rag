@@ -76,6 +76,7 @@ class Config:
     model: str
     top_k: int
     runs: int
+    effort: str          # "" means the provider's default was not overridden
     prompt: str          # fingerprint of SYSTEM + the response schema
     questions: str       # fingerprint of the answer key file
     index: str           # chunk count and build date

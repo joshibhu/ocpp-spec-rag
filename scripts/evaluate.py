@@ -49,7 +49,8 @@ from specrag.store import index_summary
 from specrag.verify import verify
 
 
-def configuration(strategy: str, passes: int, note: str) -> runlog.Config:
+def configuration(strategy: str, passes: int, note: str,
+                  effort: str) -> runlog.Config:
     """Capture what must not move while two numbers are being compared.
 
     The prompt fingerprint covers the schema as well as the system message,
@@ -64,6 +65,7 @@ def configuration(strategy: str, passes: int, note: str) -> runlog.Config:
         model=settings.chat_model,
         top_k=RETRIEVE,
         runs=passes,
+        effort=effort,
         prompt=runlog.fingerprint(
             SYSTEM, json.dumps(GroundedAnswer.model_json_schema(), sort_keys=True)
         ),
@@ -84,7 +86,8 @@ def section_prefix(section: str | None) -> str:
     return section.split()[0].rstrip(".")
 
 
-def attempt(question: str, retrieve: Retriever) -> Result | None:
+def attempt(question: str, retrieve: Retriever,
+            effort: str = "") -> Result | None:
     """One answer, or None if the API would not produce one.
 
     The SDK already retries transient failures four times; this catches what
@@ -100,14 +103,15 @@ def attempt(question: str, retrieve: Retriever) -> Result | None:
     genuine bug in our own code crash loudly.
     """
     try:
-        return answer(question, retrieve=retrieve)
+        return answer(question, retrieve=retrieve,
+                      effort=effort or None)
     except APIError as exc:
         print(f"      LOST  {type(exc).__name__}: {exc}"[:110], flush=True)
         return None
 
 
 def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1,
-        note: str = "", limit: int = 0) -> None:
+        note: str = "", limit: int = 0, effort: str = "") -> None:
     """--limit exists to test the harness, never to report a number.
 
     A full pass is twenty-plus minutes, and on Day 19 a harness bug was
@@ -118,7 +122,9 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1,
     retrieve = STRATEGIES[strategy]
     questions = load()
     config = configuration(
-        strategy, runs, f"PARTIAL ({limit} questions) {note}".strip() if limit else note
+        strategy, runs,
+        f"PARTIAL ({limit} questions) {note}".strip() if limit else note,
+        effort,
     )
     started, clock = runlog.now(), time.perf_counter()
     details: list[dict] = []
@@ -128,7 +134,8 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1,
     print(f"  {questions.summary()}")
     print(f"  strategy: {strategy}   runs per question: {runs}")
     print(f"  model: {config.model}   top-k: {config.top_k}"
-          f"   prompt: {config.prompt}   key: {config.questions}")
+          f"   prompt: {config.prompt}   key: {config.questions}"
+          f"   effort: {config.effort or 'provider default'}")
     print()
     print("  ans = answered (did not refuse)   cover = expected sections retrieved")
     print("  cited = of those, model used      flags = verifier findings")
@@ -158,7 +165,7 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1,
         lost_runs = 0
 
         for _ in range(runs):
-            result = attempt(case.q, retrieve)
+            result = attempt(case.q, retrieve, effort)
             if result is None:
                 lost_runs += 1
                 lost_calls += 1
@@ -341,4 +348,5 @@ if __name__ == "__main__":
         strategy=chosen,
         runs=int(option("--runs", "1")),
         note=option("--note", ""),
-        limit=int(option("--limit", "0")))
+        limit=int(option("--limit", "0")),
+        effort=option("--effort", ""))

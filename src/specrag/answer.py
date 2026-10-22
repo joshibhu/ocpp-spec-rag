@@ -240,6 +240,7 @@ def answer(
     limit: int = RETRIEVE,
     retrieve: Retriever = identifier_aware,
     model: str | None = None,
+    effort: str | None = None,
 ) -> Result:
     """Retrieve, then answer from what was retrieved.
 
@@ -273,6 +274,17 @@ def answer(
         # No temperature. The gpt-5 family only accepts the default, and
         # lowering it would not buy much: the grounding comes from the
         # passages and the instruction, not from sampling settings.
+        #
+        # reasoning_effort IS worth a parameter, because Day 20 measured
+        # where the money and the waiting actually are: ~89% of the bill and
+        # nearly all of the 28 seconds per answer is reasoning the reader
+        # never sees. Two planned cost experiments - fewer passages, smaller
+        # chunks - were abandoned on that measurement, because the input side
+        # is 4-16% of the bill. This is the only real lever.
+        #
+        # Omitted rather than defaulted, so a run that does not set it is
+        # recorded as the provider's default rather than as a value we chose.
+        **({"reasoning_effort": effort} if effort else {}),
     )
     elapsed = time.perf_counter() - started
 
