@@ -20,11 +20,10 @@ four questions and breaks two reads identically to a fix that helps two and
 breaks none, until the ids are on screen.
 """
 
-import re
 import sys
 from dataclasses import fields
 
-from specrag.runs import Config, RunRecord, load
+from specrag.runs import Config, RunRecord, load, stable
 
 # Derived from Config, never restated. Written out by hand, this list missed
 # `effort` the moment Config gained it - so the one experiment whose single
@@ -62,26 +61,10 @@ def find(runs: list[RunRecord], wanted: str) -> RunRecord:
     return hits[0]
 
 
-AGE = re.compile(r"\s*\([^)]*ago\)")
-
-
-def comparable_value(name: str, value: object) -> object:
-    """Strip the parts of a stored value that move without being changed.
-
-    Runs recorded before index_identity() existed hold index_summary()'s
-    prose, which carries a relative age. Normalising it here rather than
-    rewriting those lines keeps the log append-only: the reader tolerates
-    what an older writer produced, exactly as LEGACY_DEFAULTS does.
-    """
-    if name == "index" and isinstance(value, str):
-        return AGE.sub("", value)
-    return value
-
-
 def differences(before: RunRecord, after: RunRecord) -> list[str]:
     return [f for f in CONFIG_FIELDS
-            if comparable_value(f, getattr(before.config, f))
-            != comparable_value(f, getattr(after.config, f))]
+            if stable(f, getattr(before.config, f))
+            != stable(f, getattr(after.config, f))]
 
 
 def compare(first: str, second: str) -> None:

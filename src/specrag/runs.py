@@ -31,6 +31,7 @@ section numbers carry the measurement; the prose would carry the copyright.
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -129,6 +130,25 @@ def record(run: RunRecord, path: Path = RUNS_PATH) -> str:
 # configured the new way, which is the exact failure fingerprints exist to
 # prevent, arriving through the back door.
 LEGACY_DEFAULTS: dict[str, Any] = {"effort": ""}
+
+# Runs recorded before index_identity() existed stored index_summary()'s
+# prose, which carries a RELATIVE age - "14.7 days ago". Frozen in a log and
+# reprinted later, that is a stale number presenting itself as a current one,
+# which is instrument bug #2 arriving through a side door: it was true when
+# written and nothing on the page says when that was.
+#
+# Normalised on read rather than rewritten in the log, so append-only holds.
+# It lives here rather than in the script that first needed it because two
+# readers need it now, and restating a rule in its second caller is exactly
+# the duplication that made bug #11.
+_AGE = re.compile(r"\s*\([^)]*ago\)")
+
+
+def stable(name: str, value: object) -> object:
+    """A stored config value with its self-moving parts removed."""
+    if name == "index" and isinstance(value, str):
+        return _AGE.sub("", value)
+    return value
 
 
 def load(path: Path = RUNS_PATH) -> list[RunRecord]:
