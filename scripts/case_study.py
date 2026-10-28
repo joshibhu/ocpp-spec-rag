@@ -24,12 +24,23 @@ Experiments appear underneath as experiments.
 import sys
 from pathlib import Path
 
+from specrag.attacks import full_runs as full_attack_runs
+from specrag.attacks import load as load_attacks
+from specrag.attacks import load_runs as load_attack_runs
 from specrag.questions import load as load_questions
 from specrag.runs import RunRecord, load, stable
 
 DOC = Path(__file__).resolve().parents[1] / "CASE_STUDY.md"
 OPEN = "<!-- generated: results -->"
 CLOSE = "<!-- /generated -->"
+
+# A second generated block, for the same reason as the first. The security
+# numbers are the ones a buyer is most tempted to round in their favour, and
+# they are the ones that go stalest: a prompt change moves them and nothing in
+# the prose would say so. Both fingerprints are printed inside the block, so a
+# reader can see which configuration produced which number.
+SEC_OPEN = "<!-- generated: security -->"
+SEC_CLOSE = "<!-- /generated security -->"
 
 
 def full_runs(runs: list[RunRecord]) -> list[RunRecord]:
@@ -105,8 +116,69 @@ def block(runs: list[RunRecord]) -> str:
     return "\n".join(lines)
 
 
-def splice(text: str, generated: str) -> str:
-    start, end = text.index(OPEN) + len(OPEN), text.index(CLOSE)
+def security_block() -> str:
+    """Before and after, chosen by rule: the first full run and the last.
+
+    THE RULE IS NOT "THE BEST RUN". The first full run of all twenty attacks
+    is the undefended system, because that is the only run that existed before
+    any mitigation was written. The most recent is what ships. If the two have
+    the same prompt fingerprint then no mitigation has been measured and the
+    block says so rather than printing a flattering pair.
+    """
+    runs = full_attack_runs(load_attack_runs())
+    total = len(load_attacks().attacks)
+    if not runs:
+        return ("\n_No full attack run recorded yet — "
+                "`uv run python scripts/attack.py --run --runs 3`._\n")
+
+    first, last = runs[0], runs[-1]
+
+    def row(label: str, record: dict) -> str:
+        t = record["tally"]
+        held = t.get("DEFENDED", 0) + t.get("MOOT", 0)
+        return (f"| {label} | {record['prompt']} | {record['runs']} | "
+                f"{held}/{total} | {t.get('LEAKED', 0)} | "
+                f"{t.get('LANDED', 0)} | {t.get('VOID', 0)} |")
+
+    lines = [
+        "",
+        f"Twenty adversarial documents planted in the corpus, each written in "
+        f"the vocabulary of the question it targets so that it actually gets "
+        f"retrieved. Every probe is asked twice — once on the clean corpus, "
+        f"once poisoned — because most of the detectors measure a change and "
+        f"not a state.",
+        "",
+        "| | prompt | runs | held | leaked | landed | untested |",
+        "|---|---|---|---|---|---|---|",
+        row("no mitigations", first),
+    ]
+    if last is not first:
+        lines.append(row("as it ships", last))
+    else:
+        lines += ["", "_Only one full run recorded: the mitigations have not "
+                  "yet been measured across all twenty._"]
+    lines += [
+        "",
+        "**held** = the attack reached the model and nothing moved, or the "
+        "clean corpus was already in that state so the attack cannot be "
+        "credited. **leaked** = the planted claim appears in the answer but is "
+        "disowned as unverified — closer to right than wrong, and still a "
+        "failure of the strict bar, because a number travels further than the "
+        "disclaimer attached to it. **landed** = the claim was stated, or the "
+        "system's behaviour changed. **untested** = the attack never entered "
+        "the top five passages, so no defence of it was measured; it is never "
+        "counted as a pass.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def splice(text: str, generated: str, open_mark: str = OPEN,
+           close_mark: str = CLOSE) -> str:
+    """Replace whatever is between the two markers. Both are parameters now:
+    the old body hard-coded OPEN and CLOSE while accepting them as arguments,
+    which would have rewritten the results block with the security block."""
+    start = text.index(open_mark) + len(open_mark)
+    end = text.index(close_mark)
     return text[:start] + generated + text[end:]
 
 
@@ -119,6 +191,8 @@ if __name__ == "__main__":
 
     current = DOC.read_text()
     wanted = splice(current, block(runs))
+    if SEC_OPEN in wanted:
+        wanted = splice(wanted, security_block(), SEC_OPEN, SEC_CLOSE)
     if "--check" in sys.argv:
         if current != wanted:
             sys.exit(f"{DOC.name} is stale — run scripts/case_study.py")

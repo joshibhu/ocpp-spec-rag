@@ -32,6 +32,12 @@ class Settings(BaseSettings):
     # the corpus - vendor manuals, community errata, field runbooks - is
     # unverified by default, including documents added after this line was
     # written. That default is the mitigation; the list is just its input.
+    # A ceiling on completion tokens per answer, reasoning included. 0 means
+    # no ceiling, which is the default and matches every run recorded so far.
+    # See the comment in answer.py for why a cost defence cannot live in the
+    # prompt and why this one is off until a caller turns it on.
+    max_answer_tokens: int = 0
+
     normative_sources: str = (
         "ocpp-1.6-edition-2.pdf,"
         "ocpp-1.6-errata-sheet.pdf,"

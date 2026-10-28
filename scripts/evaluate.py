@@ -111,21 +111,28 @@ def attempt(question: str, retrieve: Retriever,
 
 
 def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1,
-        note: str = "", limit: int = 0, effort: str = "") -> None:
+        note: str = "", limit: int = 0, effort: str = "",
+        kind: str = "") -> None:
     """--limit exists to test the harness, never to report a number.
 
     A full pass is twenty-plus minutes, and on Day 19 a harness bug was
     discovered at minute twenty by the run dying. Proving the plumbing on
     three questions costs forty seconds. Any run with a limit is recorded
     with its note marked PARTIAL so it can never be read as a result.
+
+    --kind narrows to one category, and exists for a different reason: a
+    REGRESSION CHECK ON A CHANGE THAT WAS NOT ABOUT ACCURACY. Day 22 added two
+    prompt rules for security, and the first thing they did was move the clean
+    baseline on the four "what is the default X" questions from unsupported
+    back to subject_absent - undoing precisely what three prompt rounds on Day
+    20 had been spent fixing. Measuring that needs ten questions, not
+    seventy-four: 30 calls against 222. Still PARTIAL, still never a headline.
     """
     retrieve = STRATEGIES[strategy]
     questions = load()
-    config = configuration(
-        strategy, runs,
-        f"PARTIAL ({limit} questions) {note}".strip() if limit else note,
-        effort,
-    )
+    partial = (f"PARTIAL ({limit} questions) " if limit else "") + \
+              (f"PARTIAL (kind={kind} only) " if kind else "")
+    config = configuration(strategy, runs, (partial + note).strip(), effort)
     started, clock = runlog.now(), time.perf_counter()
     details: list[dict] = []
     spend, unpriced = 0.0, 0
@@ -154,7 +161,13 @@ def run(verbose: bool = False, strategy: str = "ident+vec", runs: int = 1,
     scored_answerable = scored_refusals = 0
     lost_calls = incomplete = 0
 
-    asked = questions.questions[:limit] if limit else questions.questions
+    asked = questions.questions
+    if kind:
+        asked = [q for q in asked if q.kind.value == kind]
+        if not asked:
+            sys.exit(f"no questions of kind {kind!r}")
+    if limit:
+        asked = asked[:limit]
     for case in asked:
         answered = 0
         cover_got, want = 0, 0          # retrieval is deterministic: one value
@@ -349,4 +362,5 @@ if __name__ == "__main__":
         runs=int(option("--runs", "1")),
         note=option("--note", ""),
         limit=int(option("--limit", "0")),
+        kind=option("--kind", ""),
         effort=option("--effort", ""))

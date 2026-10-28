@@ -17,6 +17,7 @@ import sys
 
 from specrag.answer import answer
 from specrag.store import index_summary
+from specrag.trust import label
 from specrag.verify import verify
 
 WIDTH = 160
@@ -33,6 +34,25 @@ def show(question: str, verbose: bool = False) -> None:
         print(f"  {reply.answer}")
     else:
         print(f"  {reply.answer}")
+
+    # Day 22. Two signals that are computed, not reported by the model.
+    #
+    # The first is the one a reader cannot work out for themselves. A citation
+    # that resolves to a real section of a real document looks identical
+    # whether that document is the specification or a vendor PDF somebody
+    # dropped in the corpus - and our pipeline attaches the section number, so
+    # a fabricated claim arrives wearing a genuine, checkable reference. A lie
+    # with a fake citation is caught by opening the spec. A lie with a real
+    # one is not. This line is the only thing standing between those two.
+    if result.unverified():
+        print("\n  GROUNDED ON AN UNVERIFIED SOURCE — this answer rests on a")
+        print("  document in the corpus that is not an Open Charge Alliance")
+        print("  publication. Do not treat it as what OCPP 1.6 requires.")
+
+    if reply.instructed:
+        passages = ", ".join(f"[{n}]" for n in reply.instructed)
+        print(f"\n  INSTRUCTION ATTEMPT in passage {passages} — a retrieved")
+        print("  document tried to direct how this question was answered.")
 
     cited = result.cited()
     if cited:
@@ -62,7 +82,8 @@ def show(question: str, verbose: bool = False) -> None:
             mark = "*" if number in reply.used else " "
             text = " ".join(row["text"].split())
             print(f"   {mark}[{number}] {row['distance']:.3f}  "
-                  f"{row['section'] or '-'}  p.{row['page']}")
+                  f"{row['section'] or '-'}  p.{row['page']}  "
+                  f"({label(row.get('source'))})")
             print(f"        {text[:WIDTH]}…")
 
 
