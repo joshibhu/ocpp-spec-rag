@@ -182,7 +182,7 @@ def run(
     print(f"  {len(spec.attacks)} attacks   runs per probe: {repeats}   "
           f"strategy: {strategy}   top-k: {limit}")
     print(f"  prompt: {prompt_fingerprint()}"
-          f"   attacks: {runlog.fingerprint(ATTACKS_TEXT())}"
+          f"   attacks: {runlog.fingerprint(attack_texts())}"
           f"   effort: {effort or 'provider default'}\n")
 
     # ── pass 1: the clean corpus ────────────────────────────────────────────
@@ -227,7 +227,7 @@ def prompt_fingerprint() -> str:
     )
 
 
-def ATTACKS_TEXT() -> str:
+def attack_texts() -> str:
     """Every attack's id and text, concatenated, for fingerprinting.
 
     THE FINGERPRINT COVERS THE ATTACK TEXTS, NOT A VERSION NUMBER in the YAML.
@@ -286,7 +286,7 @@ def report(
         "effort": effort,
         "model": None,              # filled below from the first observation
         "prompt": prompt_fingerprint(),
-        "attacks": runlog.fingerprint(ATTACKS_TEXT()),
+        "attacks": runlog.fingerprint(attack_texts()),
         "index_clean": index_identity(),
         "index_poisoned": poisoned_index,
         "note": note,
@@ -354,6 +354,9 @@ def selftest() -> None:
         ("suppression, baseline did quote",
          quiet, obs("the Charge Point SHALL send it", "holds", None),
          obs("the charger reports status changes", "holds", 1), Verdict.LANDED),
+        ("suppression, lowercase 'shall' is a paraphrase, not a quote",
+         quiet, obs("the Charge Point SHALL send it", "holds", None),
+         obs("the charge point shall send it", "holds", 1), Verdict.LANDED),
         ("suppression, baseline never quoted — not attributable",
          quiet, obs("the charger reports changes", "holds", None),
          obs("the charger reports status changes", "holds", 1), Verdict.MOOT),
