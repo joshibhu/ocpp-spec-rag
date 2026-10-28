@@ -19,5 +19,27 @@ class Settings(BaseSettings):
 
     chat_model: str = "gpt-5-nano"
 
+    # The allow-list of documents whose text may ground a normative claim.
+    #
+    # A COMMA-SEPARATED STRING AND NOT A list[str], which is a pydantic-settings
+    # quirk worth knowing: a complex field type read from the environment is
+    # parsed as JSON, so NORMATIVE_SOURCES=a.pdf,b.pdf would raise a validation
+    # error and only ["a.pdf","b.pdf"] would work. A string plus one split is
+    # the idiomatic way out. (Spring Boot binds a comma-separated env var to a
+    # List<String> directly; Python does not.)
+    #
+    # These six are the OCA publications ingested on Day 11. Everything else in
+    # the corpus - vendor manuals, community errata, field runbooks - is
+    # unverified by default, including documents added after this line was
+    # written. That default is the mitigation; the list is just its input.
+    normative_sources: str = (
+        "ocpp-1.6-edition-2.pdf,"
+        "ocpp-1.6-errata-sheet.pdf,"
+        "ocpp-j-1.6-specification.pdf,"
+        "ocpp-j-1.6-errata-sheet.pdf,"
+        "ocpp-s-1.6-specification.pdf,"
+        "ocpp-s-1.6-errata-sheet.pdf"
+    )
+
 
 settings = Settings()

@@ -8,6 +8,7 @@ from typing import Any
 
 from .db import execute, executemany, query
 from .embeddings import embed, embed_one
+from .trust import tier
 
 
 # How many texts to embed per API call. 661 separate calls would be 661
@@ -228,12 +229,43 @@ def index_identity() -> str:
     return f"{row['n']} chunks @ {row['built'].isoformat(timespec='seconds')}"
 
 
+def inventory() -> list[tuple[str, str, int]]:
+    """Every document in the index, with its trust tier and chunk count.
+
+    An index is not a single thing you either trust or do not. This is the
+    list a client asks for when they ask what the system is answering from,
+    and it is the list Day 22 needed to exist before anything could be
+    allow-listed.
+    """
+    rows = query(
+        "SELECT source, count(*) AS n FROM chunks GROUP BY source ORDER BY n DESC"
+    )
+    return [(r["source"], tier(r["source"]).value, r["n"]) for r in rows]
+
+
+def unverified_chunks() -> tuple[int, int]:
+    """(chunks, documents) in the index from outside the allow-list."""
+    off = [(s, n) for s, t, n in inventory() if t != "normative"]
+    return sum(n for _, n in off), len(off)
+
+
 def index_summary() -> str:
     """One line describing the index, printed before anything trusts it.
 
     The age is the point. Six times this sprint the measuring instrument was
     the bug — a stale server, a stale index, a stale assumption — and in every
     case the system looked fine because nothing on screen said how old it was.
+
+    DAY 22 ADDED THE SECOND HALF OF THAT LESSON, and it was our own test
+    fixture that taught it. Twenty adversarial chunks planted into this index
+    do not announce themselves: a run that died before its cleanup would leave
+    them there, every later answer would be drawn from a corpus containing
+    fabricated normative text, and the accuracy numbers would move for a
+    reason nobody recorded. The index would look perfectly healthy.
+
+    Age and provenance are the same class of fact: something true about the
+    corpus that nothing on screen was saying out loud. So the warning lives
+    here, in the line every script already prints before it trusts anything.
     """
     row = query("SELECT count(*) AS n, max(created_at) AS built FROM chunks")[0]
     if not row["n"]:
@@ -250,7 +282,13 @@ def index_summary() -> str:
         ago = f"{minutes / 60 / 24:.1f} days ago"
 
     local = built.astimezone()
-    return (f"{row['n']} chunks indexed, built {local:%Y-%m-%d %H:%M} ({ago})")
+    line = f"{row['n']} chunks indexed, built {local:%Y-%m-%d %H:%M} ({ago})"
+
+    chunks, docs = unverified_chunks()
+    if chunks:
+        line += (f"\n  WARNING: {chunks} chunks from {docs} UNVERIFIED "
+                 f"document(s) — see scripts/attack.py --clean")
+    return line
 
 
 def count() -> int:
